@@ -1,0 +1,625 @@
+@import 'tailwindcss';
+@import '../../vendor/livewire/flux/dist/flux.css';
+
+@source '../views';
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../vendor/livewire/flux-pro/stubs/**/*.blade.php';
+@source '../../vendor/livewire/flux/stubs/**/*.blade.php';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+
+    /* Échelle de taille de texte relevée globalement (2026-09-18, demande
+       explicite de l'utilisateur — "increase the font size... all complete
+       pages everywhere there are too light/small") : surcharge directement
+       l'échelle Tailwind par défaut, donc s'applique automatiquement à
+       CHAQUE usage existant de text-xs/sm/base/lg/xl/2xl/3xl dans toutes les
+       vues, sans devoir toucher un par un des dizaines de fichiers Blade.
+       +1px sur les tailles courantes (xs→sm→base→lg→xl), +2px sur les titres
+       (2xl/3xl) — hauteur de ligne augmentée du même delta absolu pour
+       garder le même rythme visuel proportionnel qu'avant.
+       (text-4xl/5xl non touchés : usage limité à welcome.blade.php, page
+       par défaut de Laravel, hors périmètre de l'application GEC.) */
+    --text-xs: 0.8125rem;       /* 13px, était 12px */
+    --text-xs--line-height: calc(1.0625 / 0.8125);
+    --text-sm: 0.9375rem;       /* 15px, était 14px */
+    --text-sm--line-height: calc(1.3125 / 0.9375);
+    --text-base: 1.0625rem;     /* 17px, était 16px */
+    --text-base--line-height: calc(1.5625 / 1.0625);
+    --text-lg: 1.1875rem;       /* 19px, était 18px */
+    --text-lg--line-height: calc(1.8125 / 1.1875);
+    --text-xl: 1.3125rem;       /* 21px, était 20px */
+    --text-xl--line-height: calc(1.8125 / 1.3125);
+    --text-2xl: 1.625rem;       /* 26px, était 24px */
+    --text-2xl--line-height: calc(2.125 / 1.625);
+    --text-3xl: 2rem;           /* 32px, était 30px */
+    --text-3xl--line-height: calc(2.375 / 2);
+
+    /* Style "soft" (2026-09-28, demande explicite de l'utilisateur avec
+       capture d'écran — "check fundednext style soft i want the same
+       here", app.fundednext.com/accounts) : coins plus arrondis + ombres
+       plus douces et diffuses partout, même technique que l'échelle
+       typographique ci-dessus — surcharger directement l'échelle Tailwind
+       par défaut s'applique automatiquement à CHAQUE usage existant de
+       rounded-md/lg/xl/2xl et shadow-sm dans toutes les vues (cartes,
+       boutons Flux, badges...), sans toucher un par un des dizaines de
+       fichiers Blade. Couleurs GEC INCHANGÉES (palette de marque déjà
+       calée avec l'utilisateur sur plusieurs itérations, voir DECISIONS.md
+       "GEC Master Color System") — seule la FORME devient plus douce, pas
+       la couleur.
+       --radius-lg est le plus impactant : c'est le rayon des boutons Flux
+       (voir vendor/livewire/flux/stubs/.../button/index.blade.php, taille
+       "base") ET de la majorité des cartes de ce projet. --radius-2xl
+       couvre les plus grandes cartes/panneaux (ex. "Aperçu du courrier"). */
+    --radius-md: 0.5rem;    /* 8px, était 6px — petits boutons/champs Flux (tailles sm/xs) */
+    --radius-lg: 0.875rem;  /* 14px, était 8px — boutons Flux (taille base) + cartes courantes */
+    --radius-xl: 1.125rem;  /* 18px, était 12px */
+    --radius-2xl: 1.5rem;   /* 24px, était 16px — grandes cartes/panneaux */
+
+    /* Ombre diffuse et légère plutôt que la valeur par défaut de Tailwind
+       (plus resserrée, plus sombre) — même esprit que les cartes flottantes
+       de FundedNext, teintée navy très clair (accordée à --color-brand-navy
+       ci-dessous) plutôt que noir pur, pour rester cohérente avec la
+       palette de marque. shadow-sm est la valeur utilisée par la quasi-
+       totalité des cartes du projet (`bg-white ... shadow-sm`). */
+    --shadow-sm: 0 6px 20px -8px rgb(21 41 107 / 0.12); /* 2026-10-09 — RGB du nouveau --color-brand-navy (#15296B) */
+
+    /* Graisse : retour à l'échelle Tailwind par défaut (2026-09-18) —
+       allégée une première fois ("no bold"), puis l'utilisateur a précisé
+       vouloir l'inverse : texte NOIR PUR et GRAS ("i want a pure black for
+       text i don't want that light black it should be bold"), donc
+       --font-weight-semibold/--font-weight-bold reviennent à 600/700 (voir
+       --color-brand-text-primary ci-dessous pour le noir pur). */
+
+    /* zinc-50/200/300/400/500 alignés sur le SYSTÈME DE COULEURS GEC
+       (2026-09-17, remplace intégralement la palette du 2026-09-16 — voir
+       DECISIONS.md "GEC Master Color System") : plutôt que de retrouver et
+       remplacer chaque usage de bg-zinc-50/border-zinc-200/etc. dans des
+       dizaines de fichiers (bordures de carte, texte secondaire, fonds de
+       thead, bordures/placeholders de champ Flux...), ces nuances SONT
+       directement les couleurs neutres du système — toute classe zinc-*
+       déjà écrite dans le projet affiche donc automatiquement la bonne
+       teinte. zinc-100/600-950 INCHANGÉS (mode sombre réel de l'app, hors
+       sujet ici — voir sidebar.blade.php pour la seule zone où un mode
+       sombre est utilisé volontairement en permanence). */
+    --color-zinc-50: #F8FAFC;    /* Table header */
+    --color-zinc-100: #f5f5f5;
+    --color-zinc-200: #E2E8F0;   /* Borders (cartes, tableaux) */
+    --color-zinc-300: #CBD5E1;   /* Borders (inputs) — Flux : border-b-zinc-300/80 */
+    /* zinc-400/500 alignés sur "secondary black" (2026-09-18, voir le
+       commentaire du système à deux niveaux de noir plus bas —
+       --color-brand-text-secondary/--color-brand-text-muted) : ce sont
+       exactement les deux nuances documentées ci-dessus comme usages
+       TEXTE (libellés de champ, texte secondaire, placeholders) — les
+       autres nuances zinc ne le sont pas (50/200/300 = fonds/bordures,
+       600-950 = mode sombre réel de la sidebar, volontairement
+       INCHANGÉES, voir notes internes). D'abord
+       passées au noir pur, puis corrigées ici : l'utilisateur veut UNE
+       hiérarchie à deux teintes de noir (libellé plus clair que la
+       valeur), pas tout au noir pur uniformément. */
+    --color-zinc-400: #404040;   /* Muted text / placeholders — Flux : placeholder-zinc-400 */
+    --color-zinc-500: #404040;   /* Secondary text */
+    --color-zinc-600: #525252;
+    --color-zinc-700: #404040;
+    --color-zinc-800: #262626;
+    --color-zinc-900: #171717;
+    --color-zinc-950: #0a0a0a;
+
+    /* GEC MASTER COLOR SYSTEM (2026-09-17, valeurs hexadécimales EXACTES
+       fournies par l'utilisateur — règle 40/30/20/10) : remplace
+       intégralement la palette du 2026-09-16. --color-* ici génère
+       automatiquement les utilitaires Tailwind correspondants (bg-brand-navy,
+       text-brand-danger, etc.), mécanisme natif de Tailwind v4 — pas besoin
+       de classes de valeur arbitraire partout.
+       MISE À JOUR 2026-10-09 (voir DECISIONS.md "Palette NSIA réelle") :
+       les sections 1 (Navy) et 2/3 (anciennement "Blue", désormais "Gold")
+       ont été réalignées sur le vrai site NSIA Assurances Cameroun — la
+       structure 40/30/20/10 et les NOMS de variable restent inchangés
+       (zéro fichier à retoucher ailleurs dans le projet), seules leurs
+       valeurs changent.
+       --color-accent est LA variable dont Flux tire boutons primaires/
+       anneaux de focus/états actifs partout dans l'app — alignée sur
+       --color-brand-blue (désormais doré, pas bleu — voir section 2/3
+       ci-dessous), même valeur en clair ET en sombre : la sidebar reste
+       teintée navy même quand elle est scopée .dark (voir sidebar.blade.php),
+       l'accent ne doit donc pas changer selon ce contexte. */
+
+    /* 1. Navy — structure (40%) — remplacée le 2026-10-09 (retour
+       utilisateur direct : "search for this site https://nsiaassurances.cm/
+       i want you to use those same color pallets") par une lecture visuelle
+       du vrai site NSIA Assurances Cameroun (capture d'écran fournie par
+       l'utilisateur — accès direct au site bloqué par une protection
+       anti-bot/WAF, cf. le journal de développement) : navy plus saturé/bleu que
+       l'ancien #0B1F3A (quasi noir), plus proche du bleu marine réel du
+       pied de page NSIA. Estimation visuelle, PAS une valeur pixel-exacte
+       (aucun outil de pipette disponible dans cet environnement) — à
+       affiner avec les DevTools du navigateur si une correspondance exacte
+       au pixel près est nécessaire. */
+    --color-brand-navy: #15296B;
+    --color-brand-navy-secondary: #1C3480;
+    --color-brand-navy-dark: #0D1B4A;
+
+    /* 2/3. Or/Gold — action/navigation + séparation/emphase (20%) — même
+       rôle structurel que l'ancien "Blue" (section 2/3 du GEC Master Color
+       System du 2026-09-17, voir le journal de développement 2026-09-17), remplacé
+       par l'accent or/doré réel du site NSIA (logo, puces "Contact"/"Liens
+       rapides"/"Newsletter", icônes de contact en pied de page) — le site
+       réel n'utilise AUCUN bleu comme accent, contrairement à l'ancienne
+       palette de ce projet. --color-accent (ci-dessous) hérite
+       automatiquement de ce changement : tout bouton primaire/état actif/
+       anneau de focus de l'app passe du bleu à l'or sans toucher un seul
+       autre fichier. --color-brand-info* (plus bas, statut "information")
+       reste bleu DÉLIBÉRÉMENT — c'est une couleur de STATUT sémantique
+       distincte de l'identité de marque, pas un alias de --color-brand-blue
+       malgré la valeur identique historique. */
+    --color-brand-blue: #D4A72C;
+    --color-brand-blue-medium: #B8911F;  /* hover, états actifs */
+    --color-brand-blue-pale: #FBF3DC;    /* conteneurs d'icône, fonds doux */
+    --color-brand-blue-soft: #FDFAF2;    /* sections subtiles, zones vides */
+    --color-brand-blue-border: #EDD9A3;  /* bordure bouton secondaire */
+
+    /* --color-brand-accent (2026-10-12, retour utilisateur sur capture
+       d'écran du contenu principal — "change those yellow color on the
+       main contents to blue") : restaure EXACTEMENT les valeurs bleues
+       d'origine de --color-brand-blue avant le passage à l'or du
+       2026-10-09, sous un nom dédié distinct — l'or (--color-brand-blue
+       ci-dessus) reste la couleur de la SIDEBAR (habillage NSIA, demandé
+       et confirmé par l'utilisateur), --color-brand-accent devient la
+       couleur d'action du CONTENU PRINCIPAL (boutons primaires, focus,
+       liens, icônes KPI...). --color-accent (plus bas) pointe désormais
+       ici au lieu de --color-brand-blue ; le bloc .dark (plus bas, scope
+       sidebar uniquement) continue lui de pointer vers --color-brand-blue
+       pour garder la sidebar dorée. */
+    --color-brand-accent: #2563EB;
+    --color-brand-accent-medium: #1D4ED8;
+    --color-brand-accent-pale: #EFF6FF;
+    --color-brand-accent-soft: #F7FAFF;
+    --color-brand-accent-border: #BFDBFE;
+
+    /* 4. Blanc / espace de travail (30%) — voir aussi sidebar.blade.php
+       (body) pour le fond de page général #F5F8FC, distinct des cartes
+       blanches. */
+    --color-brand-surface: #F5F8FC;      /* fond de page général */
+    --color-brand-surface-soft: #F8FAFC; /* en-tête de tableau, aperçu OCR */
+
+    /* 5. Neutres (texte, bordures) */
+    /* Système à deux niveaux de NOIR (2026-09-18, itération finale de
+       l'utilisateur — "black not light black or light gray but black" puis
+       "some should be secondary black and others primary black") : plus
+       aucun texte n'utilise un gris CLAIR (l'ancien #64748B/#94A3B8, teinté
+       bleu, lisait comme du gris pâle, pas du noir) — seulement deux
+       nuances, toutes deux sombres :
+       - "primary black" (#000000) : le texte principal — valeurs de champ,
+         corps de texte, titres (voir [data-flux-heading] ci-dessous).
+       - "secondary black" (#404040, déjà utilisé ailleurs comme zinc-700) :
+         la hiérarchie secondaire — libellés de champ, texte muet,
+         placeholders — plus sombre que l'ancien gris clair, mais
+         volontairement distinct du noir pur pour garder une hiérarchie
+         visuelle entre libellé et valeur. secondary ET muted partagent
+         désormais la MÊME teinte (l'utilisateur n'a demandé que deux
+         niveaux, pas trois). --color-zinc-400/500 ci-dessus (libellés
+         `text-zinc-500` partout dans l'app) alignés sur cette même teinte
+         "secondary black", pas sur le noir pur. */
+    --color-brand-text-primary: #000000;
+    --color-brand-text-secondary: #404040;
+    --color-brand-text-muted: #404040;
+    --color-brand-border: #E2E8F0;
+    --color-brand-border-input: #CBD5E1;
+    --color-brand-table-header: #F8FAFC;
+    /* Alignée sur "secondary black" (voir le bloc à deux niveaux de noir
+       ci-dessus) — #475569 était un reliquat de la palette du 2026-09-17
+       ("GEC Master Color System"), jamais mis à jour lors du passage au
+       système à deux noirs le 2026-09-18 : en-tête de tableau clairement
+       plus clair que le corps du texte sur toutes les pages qui l'utilisent
+       (Services, Utilisateurs & Accès, Dossiers & Archives). */
+    --color-brand-table-header-text: #404040;
+
+    /* 6. Couleurs de statut (10%) — teinte saturée (icônes, boutons) +
+       variante claire (badges) + variante foncée (texte de badge, voir
+       x-statut-badge et section "Status Badges" du système de couleurs). */
+    --color-brand-success: #16A34A;
+    --color-brand-success-dark: #15803D;
+    --color-brand-success-light: #DCFCE7;
+    --color-brand-warning: #F59E0B;
+    --color-brand-warning-dark: #B45309;
+    --color-brand-warning-light: #FEF3C7;
+    --color-brand-danger: #DC2626;
+    --color-brand-danger-dark: #B91C1C;
+    --color-brand-danger-light: #FEE2E2;
+    --color-brand-danger-border: #FECACA;
+    --color-brand-danger-hover-bg: #FEF2F2;
+    --color-brand-info: #2563EB;
+    --color-brand-info-dark: #1D4ED8;
+    --color-brand-info-light: #DBEAFE;
+    --color-brand-disabled-bg: #F1F5F9;
+    /* Même correctif que --color-brand-table-header-text ci-dessus :
+       #64748B est exactement l'ancien gris clair explicitement banni
+       ("black not light black or light gray but black", voir notes internes) — oublié lors du passage au système à
+       deux noirs car défini sous un nom différent (disabled-text, pas
+       zinc-400/500/text-secondary). */
+    --color-brand-disabled-text: #404040;
+
+    /* "Courriers urgents" (priorité) et "Courrier confidentiel" (accès)
+       n'existent pas dans le système de couleurs fourni par l'utilisateur
+       (seulement navy/bleu/blanc/gris + succès/attention/danger/info) —
+       clarifié explicitement avec l'utilisateur le 2026-09-17 : urgent
+       rejoint la famille danger (rouge), confidentiel rejoint navy. Alias
+       plutôt que nouvelles teintes, pour rester strictement dans le
+       système fourni. */
+    --color-brand-urgent: var(--color-brand-danger);
+    --color-brand-secure: var(--color-brand-navy);
+
+    /* Sidebar (section 8 du système de couleurs) — divider recoloré en or
+       le 2026-10-09 ("create a design that blend inside the sidebar like
+       the one on the screenshot i send") : était navy (#1E3A5F, quasi
+       invisible sur le fond navy de la sidebar), désormais le même or que
+       --color-brand-blue-medium pour réutiliser, à l'intérieur même de la
+       sidebar, l'accent or que le site NSIA réel utilise pour ses propres
+       séparateurs/puces de section (voir plus bas, ligne connectrice des
+       groupes dépliés + puces "—" des titres de groupe). */
+    --color-brand-sidebar-text-secondary: #CBD5E1;
+    --color-brand-sidebar-divider: var(--color-brand-blue-medium);
+    /* Dégradé de fond DÉDIÉ à la sidebar (2026-10-09, spec utilisateur
+       détaillée avec hex exacts — "deep midnight navy blue (#061438 to
+       #0A1B50)") : plus sombre que --color-brand-navy (#15296B, calé sur
+       une estimation visuelle du pied de page du site réel) — un token
+       séparé plutôt qu'une modification de --color-brand-navy, pour ne
+       JAMAIS faire bouger les boutons/états actifs/accents qui dépendent
+       de --color-brand-navy partout ailleurs dans l'app (seule la sidebar
+       utilise ce dégradé, via bg-gradient-to-b dans sidebar.blade.php). */
+    --color-brand-sidebar-bg-from: #0A1B50;
+    --color-brand-sidebar-bg-to: #061438;
+
+    --color-accent: var(--color-brand-accent);
+    --color-accent-content: var(--color-brand-accent);
+    --color-accent-foreground: var(--color-white);
+}
+
+@layer theme {
+    .dark {
+        /* 2026-10-12, retour utilisateur — "change those yellow color on
+           the main contents to blue" : --color-brand-blue (or, voir plus
+           haut) reste réservé à la sidebar ET à ses pages liées (même
+           motif que l'habillage NSIA) via CE bloc .dark — seule la sidebar
+           est scopée .dark dans ce projet, jamais toute la page (le vrai
+           mode sombre applicatif reste gris zinc, inchangé). Le contenu
+           principal (hors sidebar) utilise désormais --color-brand-accent
+           (bleu, voir section 2/3 plus haut) via le :root ci-dessus —
+           boutons primaires/anneaux de focus/liens redeviennent bleus
+           PARTOUT SAUF dans ce scope .dark, qui les garde dorés. */
+        --color-accent: var(--color-brand-blue);
+        --color-accent-content: var(--color-brand-blue);
+        --color-accent-foreground: var(--color-white);
+    }
+}
+
+@layer base {
+
+    *,
+    ::after,
+    ::before,
+    ::backdrop,
+    ::file-selector-button {
+        border-color: var(--color-gray-200, currentColor);
+    }
+}
+
+[data-flux-field]:not(ui-radio, ui-checkbox) {
+    @apply grid gap-2;
+}
+
+/* Barre de défilement de la page masquée partout (retour utilisateur,
+   2026-10-05, capture d'écran) — même demande déjà appliquée au panneau
+   "Aperçu du courrier" (resources/views/components/apercu/visionneuse.blade.php) :
+   le défilement lui-même reste entièrement fonctionnel (molette, trackpad,
+   clavier, cliquer-glisser), seul le rendu visuel de la barre est masqué. */
+html {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+html::-webkit-scrollbar {
+    display: none;
+}
+
+/* Barre de défilement de la sidebar masquée (2026-10-10, retour utilisateur
+   avec capture d'écran — "i dont need the scrollbar") — même technique que
+   la barre de la page ci-dessus : le défilement reste entièrement
+   fonctionnel, seul le rendu visuel de la barre est masqué. [data-flux-sidebar]
+   est l'élément qui scrolle réellement (voir vendor/livewire/flux/stubs/
+   .../sidebar/index.blade.php, prop `sticky` -> overflow-y-auto posé
+   directement sur cet élément). scrollbar-gutter-stable (retiré de la
+   classe de <flux:sidebar> dans sidebar.blade.php) n'a plus lieu d'être
+   une fois la barre masquée : cette propriété réservait de l'espace
+   spécifiquement pour une barre VISIBLE. */
+[data-flux-sidebar] {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+[data-flux-sidebar]::-webkit-scrollbar {
+    display: none;
+}
+
+[data-flux-label] {
+    @apply  !mb-0 !leading-tight;
+}
+
+input:focus[data-flux-control],
+textarea:focus[data-flux-control],
+select:focus[data-flux-control] {
+    @apply outline-hidden ring-2 ring-accent ring-offset-2 ring-offset-accent-foreground;
+}
+
+/* \[:where(&)\]:size-4 {
+    @apply size-4;
+} */
+
+/* Item de sidebar actif : pastille bleue pleine, pas le style Flux par
+   défaut (2026-09-16, demande explicite de l'utilisateur : "this exact
+   blue", en montrant la maquette — voir DECISIONS.md "Sidebar bleue").
+   Flux (vendor/livewire/flux/stubs/resources/views/flux/sidebar/item.blade.php)
+   donne à l'item actif un fond QUASI BLANC (data-current:bg-white) avec
+   seulement le TEXTE en couleur d'accent — jamais un aplat de couleur
+   plein comme la maquette. Surchargé ici plutôt que de patcher le
+   vendor (jamais de patch vendor, voir notes internes). */
+[data-flux-sidebar-item][data-current] {
+    background-color: var(--color-accent) !important;
+    color: var(--color-accent-foreground) !important;
+    border-color: transparent !important;
+}
+
+/* Survol de sidebar en Navy secondaire exact (2026-09-17, système de
+   couleurs GEC, section 8 "Sidebar hover: #102A4C") — Flux applique par
+   défaut un survol algorithmique (blanc à 7% d'opacité sur le fond navy,
+   dark:hover:bg-white/[7%]) plutôt qu'une teinte fixe. Cible les items ET
+   les en-têtes de groupe déroulant (bouton à l'intérieur de
+   [data-flux-sidebar-group], voir le stub vendor du groupe de sidebar). */
+[data-flux-sidebar-item]:hover:not([data-current]) {
+    background-color: var(--color-brand-navy-secondary) !important;
+}
+
+[data-flux-sidebar-group] > button:hover {
+    background-color: var(--color-brand-navy-secondary) !important;
+}
+
+/* "Blend inside the sidebar like the screenshot" (2026-10-09, capture
+   d'écran du pied de page nsiaassurances.cm réel — puces "—" or après
+   "Contact"/"Liens rapides"/"Newsletter", icônes de contact rendues en or).
+   Reproduit le même MOTIF (puce or après le titre, icône de section teintée
+   or) à l'intérieur de la sidebar GEC, sans toucher au logo/à la marque
+   NSIA elle-même (hors périmètre — outil interne, pas le site public).
+   Ciblé sur des points de sélection déjà stables dans ce projet :
+   [data-flux-sidebar-group] directement (déjà utilisé ligne ~308 et
+   ~324 ci-dessus) + le stub vendor (flux/sidebar/group.blade.php, lu avant
+   d'écrire ceci) confirme qu'un groupe a TOUJOURS soit un <button> soit un
+   <div> comme premier enfant direct, et qu'un <span> unique porte le texte
+   du titre dans les deux variantes du bouton (avec/sans icône, l'ordre des
+   enfants diffère mais il n'y a jamais qu'un seul span) — donc
+   "> button span" et "> div:first-child > div" restent corrects quelle que
+   soit la variante rendue. */
+[data-flux-sidebar-group] > button span::after,
+[data-flux-sidebar-group] > div:first-child > div::after {
+    content: ' —';
+    color: var(--color-brand-sidebar-divider);
+    font-weight: 700;
+}
+
+/* Icônes des groupes dépliables (Courriers, Dossiers & Archives,
+   Administration) teintées or au lieu du gris/blanc par défaut de Flux —
+   écho direct des icônes de contact or du pied de page réel. Les icônes
+   des ITEMS (liens individuels à l'intérieur d'un groupe) ne sont PAS
+   concernées : seul le <button> d'en-tête de groupe est un enfant direct
+   de [data-flux-sidebar-group], les items sont imbriqués plus profond. */
+[data-flux-sidebar-group] > button svg {
+    color: var(--color-brand-blue-medium);
+}
+
+/* Ligne connectrice verticale d'un groupe déplié (le trait fin qui relie
+   visuellement les liens d'un sous-groupe, déjà présent dans le vendor
+   stub : "absolute inset-y-[3px] w-px bg-zinc-200 dark:bg-white/30") —
+   recolorée en or plutôt que gris, pour que l'intérieur d'un groupe ouvert
+   porte lui aussi l'accent or au lieu de rester neutre. */
+[data-flux-sidebar-group] > div.relative > div:first-child {
+    background-color: var(--color-brand-sidebar-divider) !important;
+    opacity: 0.5;
+}
+
+/* Titres en Dark text navy, pas le gris zinc-800 par défaut de Flux
+   (système de couleurs GEC, "Main text #172033"). Surcharge ciblée sur
+   [data-flux-heading] plutôt que de remapper zinc-800/900 dans le thème
+   (utilisés massivement pour les FONDS du vrai mode sombre de l'app — les
+   remapper aurait teinté tous les fonds sombres en marine par effet de
+   bord). En mode sombre réel (.dark sur <html>, ou la sidebar en
+   permanence : voir sidebar.blade.php), les titres restent blancs comme
+   avant. */
+[data-flux-heading] {
+    color: var(--color-brand-text-primary);
+}
+
+.dark [data-flux-heading] {
+    color: white;
+}
+
+/* @persist('app-sidebar') (sidebar.blade.php, 2026-09-18) ajoute un
+   <div x-persist="app-sidebar"> autour de <flux:sidebar> pour le garder
+   intact d'une navigation wire:navigate à l'autre. Mais la grille de mise
+   en page de Flux (vendor/livewire/flux/dist/flux.css) repose sur deux
+   règles CSS qui exigent [data-flux-sidebar] comme ENFANT DIRECT de
+   <body> :
+   1. `*:has(>[data-flux-main]) { display: grid; grid-template-areas: ... }`
+      pose la grille sur <body> (fonctionne toujours : [data-flux-main]
+      reste un enfant direct, lui n'est pas concerné par ce wrapper).
+   2. `*:has(>[data-flux-sidebar]+[data-flux-header]) { grid-template-areas: ... }`
+      affine cette grille pour que l'en-tête ne s'étende QUE sur les
+      colonnes main+aside (pas par-dessus la colonne de la sidebar) — celle-
+      ci ne correspond PLUS une fois [data-flux-sidebar] caché derrière ce
+      div supplémentaire, body retombe alors sur la grille par défaut de la
+      règle 1 où l'en-tête s'étend sur LES TROIS colonnes, y compris
+      par-dessus la sidebar. Constaté par l'utilisateur (capture d'écran
+      annotée) : barre du haut qui s'étend sur toute la largeur de l'écran,
+      sidebar qui gagne ses propres barres de défilement internes.
+   Deux correctifs combinés, aucun ne suffisant seul :
+   - `display: contents` sur ce div : pour un algorithme grid, un enfant
+     display:contents ne génère aucune boîte propre et SES enfants
+     deviennent des items directs de la grille du grand-parent — donc
+     [data-flux-sidebar] (l'enfant réel de ce div) redevient un item de
+     grille normal, avec sa zone "sidebar" correctement appliquée.
+   - Une règle ":has(> [x-persist=...])" qui rejoue la grille de la règle 2
+     ci-dessus : "display:contents" ne change PAS le DOM réel (seulement le
+     rendu), donc la sélection ":has(> [data-flux-sidebar]+...)" originale
+     de Flux ne matchera jamais tant que ce div existe entre <body> et
+     [data-flux-sidebar] — il faut donc la reproduire nous-mêmes, ciblée sur
+     le div lui-même plutôt que sur ce qu'il contient. */
+[x-persist="app-sidebar"] {
+    display: contents;
+}
+
+body:has(> [x-persist="app-sidebar"]) {
+    grid-template-areas:
+        "sidebar header  header"
+        "sidebar main    aside"
+        "sidebar footer  aside";
+}
+
+/* Barre de défilement horizontale parasite en bas de la sidebar, constatée
+   par l'utilisateur même après le correctif de grille ci-dessus (capture
+   d'écran, "the scroll bar fro[m] the down side is till there") : la
+   sidebar (vendor/livewire/flux/stubs/.../sidebar/index.blade.php) est
+   fixée à `w-64` (16rem) et scrolle verticalement (`overflow-y-auto`, prop
+   `sticky`) mais ne fixe jamais `overflow-x`, laissé à sa valeur par défaut
+   `visible` — un groupe déplié ajoute `ps-7` (28px) d'indentation
+   supplémentaire à ses enfants (voir sidebar/group.blade.php), qui peut
+   suffire à faire dépasser un libellé + badge "Bientôt" de la largeur
+   fixe disponible malgré le `truncate` déjà posé sur le texte
+   (sidebar/item.blade.php) — le badge, lui, n'est pas tronqué. Jamais de
+   défilement horizontal voulu ici (le texte doit être tronqué avec "…", pas
+   scrollable) : `overflow-x: hidden` supprime la barre sans dépendre de la
+   cause exacte du dépassement de largeur. */
+[data-flux-sidebar] {
+    overflow-x: hidden;
+}
+
+/* Correctif du vrai problème derrière la barre parasite ci-dessus (retour
+   utilisateur, 2026-10-05, capture d'écran : "Enregistrer un courrier" et
+   "Traitement & Réponse" coupés SANS "…", "Dossiers & Archives" qui
+   repasse à la ligne) — `overflow-x: hidden` ci-dessus masquait bien le
+   débordement, mais ne faisait QUE le couper net au bord de la sidebar,
+   sans jamais déclencher la vraie troncature "…" du `truncate` déjà posé
+   sur le DIV de texte (sidebar/item.blade.php, `data-content`). Cause :
+   ce DIV est un enfant `flex-1` d'une ligne flex — par défaut, un item
+   flex a `min-width: auto`, ce qui l'EMPÊCHE de rétrécir en dessous de la
+   largeur de son propre contenu, quelle que soit la largeur réelle
+   disponible ; `truncate` (overflow:hidden + text-overflow:ellipsis) ne
+   peut donc jamais s'activer sur CE DIV — c'est le `overflow-x: hidden`
+   du PARENT, plus haut dans l'arbre, qui coupait tout net en dernier
+   recours, sans le "…" prévu. `min-width: 0` autorise enfin ce DIV à
+   rétrécir jusqu'à la largeur réellement disponible, ce qui active la
+   vraie troncature avec ellipsis — comportement déjà documenté comme
+   voulu juste au-dessus ("le texte doit être tronqué avec "…", pas
+   scrollable"), jamais correctement obtenu jusqu'ici. */
+[data-flux-sidebar-item] [data-content] {
+    min-width: 0;
+}
+
+/* Même retour utilisateur que ci-dessus : le TITRE d'un groupe dépliable
+   ("Dossiers & Archives") passait carrément à la ligne au lieu d'être
+   tronqué — contrairement à `sidebar/item.blade.php`, le `<span>` du
+   titre dans `sidebar/group.blade.php` n'a ni `truncate` ni
+   `whitespace-nowrap` du tout (juste `flex-1 leading-none`), donc le
+   comportement par défaut du texte (retour à la ligne) s'applique dès
+   que le libellé + l'icône + le chevron dépassent la largeur de la
+   sidebar. Pas de `data-*` dédié sur ce `<span>` précis (contrairement au
+   `data-content` de l'item) : ciblé structurellement via le bouton direct
+   de `[data-flux-sidebar-group]`, qui couvre les deux variantes du stub
+   (avec et sans icône de groupe). */
+[data-flux-sidebar-group] > button > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Barre de progression de navigation entre pages (2026-09-24, "am not
+   seeing animation when i... switch pages") — Livewire affiche DÉJÀ une
+   barre pendant chaque wire:navigate (NProgress intégré, voir
+   vendor/livewire/livewire/dist/livewire.js), mais en gris-bleu générique
+   #29d et 2px de haut seulement — trop discrète pour être remarquée. Pas
+   de nouveau mécanisme à construire : Livewire expose exactement cette
+   variable CSS pour la personnaliser (--livewire-progress-bar-color),
+   simplement jamais définie jusqu'ici dans ce projet. Couleur de marque +
+   légèrement plus épaisse pour rester visible sans être criarde.
+   #nprogress est injecté par Livewire lui-même (pas dans ce fichier),
+   donc surchargé ici en ciblant directement son sélecteur. */
+:root {
+    --livewire-progress-bar-color: var(--color-brand-blue);
+}
+
+#nprogress .bar {
+    height: 3px !important;
+}
+
+/* Skeleton "shimmer" de chargement (2026-09-24, demande explicite de
+   l'utilisateur : "loading animation on each table, cards, panels
+   refreshing not the loading sp[inner]") — remplace un simple wire:loading
+   texte/spinner par une forme de la même taille que le contenu réel
+   (voir components/skeleton/*.blade.php), avec un dégradé clair qui balaye
+   de gauche à droite en boucle. Couleurs alignées sur la palette de marque
+   (brand-border), pas un gris Tailwind par défaut. */
+.skeleton {
+    position: relative;
+    overflow: hidden;
+    background-color: var(--color-brand-border);
+    background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.6) 50%, transparent 100%);
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+
+.dark .skeleton {
+    background-color: var(--color-zinc-700);
+    background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.08) 50%, transparent 100%);
+}
+
+@keyframes skeleton-shimmer {
+    0% { background-position: 150% 0; }
+    100% { background-position: -50% 0; }
+}
+
+/* Jamais imposer l'animation à qui l'a désactivée au niveau système —
+   dégradé fixe, sans balayage, dans ce cas. */
+@media (prefers-reduced-motion: reduce) {
+    .skeleton {
+        animation: none;
+        background-image: none;
+    }
+}
+
+/* Badges de compteur de notifications (2026-10-05, Module 7, demande
+   explicite de l'utilisateur : "add animations on them those counts", puis
+   "it should it self automatically like going in and out" — PAS un effet
+   ponctuel à l'apparition, une respiration CONTINUE en boucle tant que le
+   badge est visible) — cloche de l'en-tête (notification-bell.blade.php) et
+   item "Notifications" de la sidebar (sidebar.blade.php,
+   data-flux-navlist-badge). Pur CSS `infinite` : aucun JS ne déclenche quoi
+   que ce soit, la boucle tourne d'elle-même tant que l'élément existe dans
+   le DOM et n'a pas `display: none` (donc aussi tant que la classe
+   `hidden` n'est pas posée dessus, voir sidebar.blade.php). Respecte
+   prefers-reduced-motion comme le shimmer ci-dessus. */
+.badge-notif-pop {
+    transform-origin: center;
+    animation: badge-notif-respire 1.6s ease-in-out infinite;
+}
+
+@keyframes badge-notif-respire {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.18); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .badge-notif-pop {
+        animation: none;
+    }
+}
