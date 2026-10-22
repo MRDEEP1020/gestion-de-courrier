@@ -1,0 +1,180 @@
+/* Barre d'outils façon aperçu Word/Outlook (demande explicite de
+   l'utilisateur, 2026-09-07/08 — capture d'écran de l'aperçu .docx
+   d'Outlook fournie en référence : barre claire en haut avec des boutons
+   libellés icône+texte, indicateur "Page X sur Y" en bas à gauche). Cette
+   référence REMPLACE la précédente (pastille flottante en bas, calquée sur
+   l'aperçu PDF d'Outlook) : la barre d'outils/barre latérale d'origine de
+   PDF.js reste cachée, remplacée par une barre en haut ne gardant que les
+   actions pertinentes pour un aperçu de courrier scanné (zoom, recherche,
+   rotation, "..."), les boutons eux-mêmes n'étant pas recréés — ce sont les
+   éléments d'origine de PDF.js (mêmes id, mêmes écouteurs d'évènement déjà
+   testés), simplement déplacés et restylés par apercu-outlook.js. */
+
+:root {
+  /* #viewerContainer (viewer.css) réserve déjà exactement cette hauteur en
+     haut via `inset: var(--toolbar-height) 0 0` — redéfinir la variable
+     suffit à lui faire laisser la place à notre barre, sans autre calcul. */
+  --toolbar-height: 48px;
+}
+
+#sidebarContainer,
+.toolbar {
+  display: none !important;
+}
+
+#apercuBarreOutlook {
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline: 0;
+  height: var(--toolbar-height);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-inline: 12px;
+  box-sizing: border-box;
+  background-color: var(--toolbar-bg-color);
+  border-block-end: 1px solid rgb(0 0 0 / 12%);
+}
+
+@media (prefers-color-scheme: dark) {
+  #apercuBarreOutlook {
+    border-block-end-color: rgb(255 255 255 / 12%);
+  }
+}
+
+.apercuGroupe {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+#apercuBarreOutlook .toolbarButton {
+  aspect-ratio: auto;
+  height: 32px;
+  padding-inline: 8px;
+  border-radius: 4px;
+  color: var(--main-color);
+}
+
+/* gap seulement sur les boutons affichant un texte (Rechercher/Rotation) :
+   sur un bouton icône seule (zoom, "..."), le <span> masqué (width/height:0)
+   compte quand même comme un item flex pour `gap`, ce qui décalerait
+   légèrement l'icône du centre sans cette restriction. */
+#apercuBarreOutlook #viewFindButton,
+#apercuBarreOutlook #pageRotateCw {
+  gap: 6px;
+}
+
+#apercuBarreOutlook .toolbarButton:hover {
+  background-color: rgb(0 0 0 / 6%);
+}
+
+@media (prefers-color-scheme: dark) {
+  #apercuBarreOutlook .toolbarButton:hover {
+    background-color: rgb(255 255 255 / 10%);
+  }
+}
+
+#apercuBarreOutlook .toolbarButton::before {
+  flex: none;
+  background-color: var(--main-color);
+}
+
+/* Libellé visible à côté de l'icône pour Rechercher/Rotation, seuls boutons
+   de cette barre à afficher un texte (comme "Imprimer"/"Traduire" dans la
+   référence) — masqué par défaut par viewer.css (réservé aux lecteurs
+   d'écran dans la barre d'origine, icône seule). Zoom et "..." restent
+   icône seule : la référence elle-même ne montre pas de zoom, et "..." y
+   est bien une icône seule sans texte. */
+#apercuBarreOutlook #viewFindButton > span,
+#apercuBarreOutlook #pageRotateCw > span {
+  display: inline-block;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  font: message-box;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* pageRotateCw perd son icône une fois sorti de #secondaryToolbar (la règle
+   d'origine, viewer.css, la limite à ce parent précis) — restaurée ici avec
+   la même variable d'icône, sans exiger cet ancêtre. */
+#pageRotateCw::before {
+  -webkit-mask-image: var(--secondaryToolbarButton-rotateCw-icon);
+          mask-image: var(--secondaryToolbarButton-rotateCw-icon);
+}
+
+/* Popups (recherche, menu "...") : la barre est maintenant en haut, comme
+   dans la référence — l'ouverture par défaut vers le bas (viewer.css) est
+   donc correcte telle quelle, aucune inversion nécessaire ici (contrairement
+   à la version précédente en pastille basse). */
+
+/* Menu "..." (Outils) : ne garder que "Rotation anti-horaire", le reste
+   (ouvrir/imprimer/enregistrer/mode présentation/aller à la première ou
+   dernière page/outil main/défilement/double page/propriétés du document)
+   fait doublon avec des actions déjà présentes hors de cette
+   prévisualisation, ou n'a pas de sens pour un aperçu en lecture seule. */
+#secondaryOpenFile,
+.visibleMediumView,
+#presentationMode,
+#viewBookmark,
+#viewBookmarkSeparator,
+#firstPage,
+#lastPage,
+#cursorToolButtons,
+#scrollModeButtons,
+#spreadModeButtons,
+#documentProperties,
+#secondaryToolbar .horizontalToolbarSeparator {
+  display: none !important;
+}
+
+/* Indicateur "Page X sur Y" en bas à gauche — réutilise le champ de page
+   éditable et le compteur d'origine de PDF.js (navigation par page toujours
+   fonctionnelle), simplement restylés pour ressembler à du texte simple. */
+#apercuIndicateurPage {
+  position: fixed;
+  inset-inline-start: 14px;
+  inset-block-end: 10px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: message-box;
+  font-size: 12px;
+  color: var(--main-color);
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+#apercuIndicateurPage #pageNumber {
+  width: 2ch;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: end;
+  pointer-events: auto;
+  /* Champ toujours éditable (saut de page), mais sans les flèches +/-
+     natives d'un <input type="number"> — hors de propos dans un indicateur
+     qui doit ressembler à du texte simple. */
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+#apercuIndicateurPage #pageNumber::-webkit-outer-spin-button,
+#apercuIndicateurPage #pageNumber::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+#apercuIndicateurPage #numPages {
+  white-space: nowrap;
+}
+
+.apercuLibellePage {
+  white-space: nowrap;
+}
