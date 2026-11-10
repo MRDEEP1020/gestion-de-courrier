@@ -14,11 +14,11 @@ export default defineConfig({
                 'resources/js/document-preview.js',
             ],
             refresh: true,
-            // 2026-11-10 — Geist, la police du site NSIA (nsiaholdingassurances.com).
-            // Les options sont le 2e argument : l'ancien appel bunny('Kumbh Sans',
-            // 'Sans serif', {...}) ignorait les graisses et ne chargeait que la 400.
+            // 2026-11-10 — les options sont le 2e argument : l'ancien appel
+            // bunny('Kumbh Sans', 'Sans serif', {...}) ignorait les graisses et
+            // ne chargeait que la 400 (gras imité par le navigateur).
             fonts: [
-                bunny('Geist', {
+                bunny('Kumbh Sans', {
                     weights: [400, 500, 600, 700],
                 }),
             ],

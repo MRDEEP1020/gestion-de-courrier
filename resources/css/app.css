@@ -9,8 +9,7 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-    /* 2026-11-10 — Geist, comme le site NSIA (chargée par vite.config.js). */
-    --font-sans: 'Geist', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-sans: 'Kumbh Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
 
     /* Échelle de taille de texte relevée globalement (2026-09-18, demande
        explicite de l'utilisateur — "increase the font size... all complete
