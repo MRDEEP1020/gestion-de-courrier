@@ -51,7 +51,7 @@ class SimulationDashboardTest extends TestCase
         $responsable->update(['service_id' => $service->id]);
         $collaborateur = $this->compte('Collaborateur', $service);
         $agent = $this->compte('Agent');
-        $dga = $this->compte('DGA');
+        $dga = $this->compte('DG');
 
         $workflow = app(WorkflowService::class);
 

@@ -14,6 +14,7 @@ use App\Models\Privilege;
 use App\Models\Profil;
 use App\Models\RegleClassement;
 use App\Models\Service;
+use App\Models\TransfertService;
 use App\Models\User;
 use App\Notifications\CourrierNotification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -119,18 +120,12 @@ class RegistrationFormTest extends TestCase
             '/^GEC-'.now()->year.'-\d{6}$/',
             $courrier->numero_reference,
         );
-        // "Réclamation" n'est pas un sinistre : depuis le 2026-09-08, un
-        // courrier ENTRANT non-sinistre attend d'abord la validation DGA/ADJ
-        // du service plutôt que de rejoindre directement la file du
-        // responsable — voir RegistrationForm::enregistrer() et
-        // test_un_courrier_sinistre_confirme_reste_enregistre_directement()
-        // ci-dessous pour le cas contraire. 'en_attente_de_transfert', pas
-        // 'en_attente_validation_dga' (2026-09-15, voir DECISIONS.md,
-        // synchronisation SRS-GEC.pdf) : le transfert n'est plus automatique.
+        // "Réclamation" n'est pas un sinistre : un courrier ENTRANT attend
+        // que l'accueil le transfère au service concerné (2026-10-23, voir
+        // DECISIONS.md "Transfert direct au service et acceptation").
         $this->assertSame('en_attente_de_transfert', $courrier->statut);
-        // 2026-09-15 (voir DECISIONS.md, synchronisation SRS-GEC.pdf) : le
-        // service saisi ici (form.service_id ci-dessus) est ignoré pour un
-        // courrier ENTRANT — c'est le DGA/ADJ DGA qui le choisira.
+        // Le service saisi ici (form.service_id ci-dessus) est ignoré pour un
+        // courrier ENTRANT — il est choisi au moment du transfert.
         $this->assertNull($courrier->service_id);
 
         $this->assertSame(1, CourrierHistorique::where('courrier_id', $courrier->id)
@@ -139,18 +134,12 @@ class RegistrationFormTest extends TestCase
             ->count());
     }
 
-    // Module 1/4 — circuit courrier entrant, demande explicite de
-    // l'utilisateur (2026-09-08) : voir DECISIONS.md "Circuit courrier
-    // entrant : validation DGA/ADJ".
-
-    public function test_un_courrier_sinistre_confirme_reste_enregistre_directement(): void
+    // Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au service
+    // et acceptation") — un sinistre est transféré AUTOMATIQUEMENT au service
+    // proposé par les règles de classement (donnée de configuration, pas de
+    // code), puis attend son acceptation comme tout autre courrier.
+    public function test_un_sinistre_est_transfere_automatiquement_au_service_propose(): void
     {
-        // 2026-09-15 (voir DECISIONS.md, synchronisation SRS-GEC.pdf) : le
-        // service n'étant plus saisi par l'agent, le routage direct vers
-        // DSIN pour un sinistre passe désormais PAR LA CLASSIFICATION
-        // AUTOMATIQUE (déjà possible sans code via une règle de classement,
-        // voir DECISIONS.md "Circuit courrier entrant") — pas par une valeur
-        // saisie dans le formulaire.
         Notification::fake();
         $agent = $this->utilisateurAvecProfil('Agent');
         $responsableDsin = $this->utilisateurAvecProfil('Responsable de service');
@@ -173,21 +162,19 @@ class RegistrationFormTest extends TestCase
             ->call('enregistrer')
             ->assertHasNoErrors();
 
-        $courrier = $dsin->courriers()->firstOrFail();
-        $this->assertSame('enregistre', $courrier->statut);
+        $courrier = Courrier::firstOrFail();
+        $this->assertSame('en_cours_de_transfert', $courrier->statut);
         $this->assertSame($dsin->id, $courrier->service_id);
-
-        // 2026-10-12, même bug que le test d'envoi direct ci-dessous : le
-        // routage automatique d'un sinistre sautait aussi la notification.
-        $this->assertTrue(CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'service_valide_dga')->exists());
-        Notification::assertSentTo($responsableDsin, CourrierNotification::class, fn ($n) => $n->action === 'service_valide_dga');
+        $this->assertSame(TransfertService::EN_ATTENTE, $courrier->dernierTransfert->statut);
+        $this->assertSame($agent->id, $courrier->dernierTransfert->transfere_par_id);
+        $this->assertTrue(CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'transfert')->exists());
+        Notification::assertSentTo($responsableDsin, CourrierNotification::class, fn ($n) => $n->action === 'transfert' && $n->envoyePar?->id === $agent->id);
     }
 
-    // Filet de sécurité (2026-09-15) : si la classification ne résout aucun
-    // service pour un sinistre (ex. règle absente/mal configurée), le
-    // courrier retombe sur la validation DGA plutôt que de rester
-    // "enregistre" sans service — jamais de courrier orphelin (Module 6).
-    public function test_un_sinistre_sans_regle_de_classement_retombe_sur_la_validation_dga(): void
+    // Filet de sécurité : si la classification ne résout aucun service pour
+    // un sinistre (règle absente ou mal configurée), le courrier reste "à
+    // transférer" — jamais un courrier orphelin (Module 6).
+    public function test_un_sinistre_sans_regle_de_classement_reste_a_transferer(): void
     {
         $agent = $this->utilisateurAvecProfil('Agent');
         $this->actingAs($agent);
@@ -209,76 +196,10 @@ class RegistrationFormTest extends TestCase
         $this->assertNull($courrier->service_id);
     }
 
-    // 2026-10-08 — privilège courriers.envoyer_direct_service (retour
-    // utilisateur : "make the agent start sending courier to the service
-    // concerné without passing throught the direction service... make
-    // that option as a priviledge"). Un agent qui le possède ET choisit
-    // lui-même un service saute la validation DGA, même mécanisme que le
-    // routage direct d'un sinistre — mais optionnel (voir test suivant).
-    public function test_un_agent_avec_le_privilege_envoie_un_courrier_entrant_direct_au_service(): void
-    {
-        Notification::fake();
-        $agent = $this->utilisateurAvecProfil('Agent');
-        $agent->privilegesDirectes()->attach(Privilege::where('cle', 'courriers.envoyer_direct_service')->value('id'));
-        $responsable = $this->utilisateurAvecProfil('Responsable de service');
-        $service = Service::factory()->create(['code' => 'DI', 'responsable_id' => $responsable->id]);
-        $this->actingAs($agent);
-
-        Livewire::test(RegistrationForm::class)
-            ->set('form.sens', 'entrant')
-            ->set('form.date_mouvement', now()->format('Y-m-d'))
-            ->set('form.objet', 'Courrier envoyé directement au service')
-            ->set('form.type_document', 'Lettre')
-            ->set('form.mode_reception', 'email')
-            ->set('form.priorite', 'normale')
-            ->set('form.confidentialite', 1)
-            ->set('form.service_id', $service->id)
-            ->call('enregistrer')
-            ->assertHasNoErrors();
-
-        $courrier = Courrier::firstOrFail();
-        $this->assertSame('enregistre', $courrier->statut);
-        $this->assertSame($service->id, $courrier->service_id);
-
-        // 2026-10-12, bug réel (retour utilisateur, "no notification of the
-        // new courrier been transfere to him why") — ce chemin saute
-        // WorkflowService::validerService() (seul endroit qui notifiait
-        // jusqu'ici), donc le responsable n'était jamais prévenu. Règle n°5 —
-        // doit aussi laisser une trace d'historique, pas seulement "creation".
-        $this->assertTrue(CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'service_valide_dga')->exists());
-        Notification::assertSentTo($responsable, CourrierNotification::class, fn ($n) => $n->action === 'service_valide_dga' && $n->envoyePar?->id === $agent->id);
-    }
-
-    // Le privilège rend le choix du service POSSIBLE, jamais obligatoire :
-    // un agent qui le possède mais ne choisit rien garde le circuit normal
-    // (validation DGA), exactement comme avant ce privilège.
-    public function test_un_agent_avec_le_privilege_qui_ne_choisit_aucun_service_garde_le_circuit_dga(): void
-    {
-        $agent = $this->utilisateurAvecProfil('Agent');
-        $agent->privilegesDirectes()->attach(Privilege::where('cle', 'courriers.envoyer_direct_service')->value('id'));
-        $this->actingAs($agent);
-
-        Livewire::test(RegistrationForm::class)
-            ->set('form.sens', 'entrant')
-            ->set('form.date_mouvement', now()->format('Y-m-d'))
-            ->set('form.objet', 'Courrier sans service choisi')
-            ->set('form.type_document', 'Lettre')
-            ->set('form.mode_reception', 'email')
-            ->set('form.priorite', 'normale')
-            ->set('form.confidentialite', 1)
-            ->call('enregistrer')
-            ->assertHasNoErrors();
-
-        $courrier = Courrier::firstOrFail();
-        $this->assertSame('en_attente_de_transfert', $courrier->statut);
-        $this->assertNull($courrier->service_id);
-    }
-
-    // Règle n°6 — un agent SANS le privilège ne peut pas court-circuiter la
-    // validation DGA en forgeant form.service_id directement (requête
-    // Livewire manipulée) : RegistrationForm::enregistrer() revérifie le
-    // privilège lui-même, jamais confiance en ce que $data contient déjà.
-    public function test_un_agent_sans_le_privilege_ne_peut_pas_forger_lenvoi_direct(): void
+    // Règle n°6 — un service forgé dans form.service_id (requête Livewire
+    // manipulée) n'est jamais persisté pour un courrier ENTRANT : il ne peut
+    // pas sauter le transfert ni l'acceptation par le service.
+    public function test_un_service_force_pour_un_entrant_est_ignore(): void
     {
         $agent = $this->utilisateurAvecProfil('Agent');
         $service = Service::factory()->create(['code' => 'DI']);
@@ -301,32 +222,19 @@ class RegistrationFormTest extends TestCase
         $this->assertNull($courrier->service_id);
     }
 
-    // Le sélecteur de service (cascade Site/Département/Service) ne
-    // s'affiche pour un courrier ENTRANT que si l'agent a le privilège —
-    // sinon le texte "Le service sera choisi par le DGA..." reste affiché
-    // comme avant ce privilège.
-    public function test_le_selecteur_de_service_napparait_pour_un_entrant_que_si_le_privilege_est_present(): void
+    // Le sélecteur de service (cascade Site/Département/Service) ne s'affiche
+    // que pour un courrier SORTANT ; un entrant choisit son service au
+    // moment du transfert.
+    public function test_le_selecteur_de_service_napparait_que_pour_un_sortant(): void
     {
-        $agent = $this->utilisateurAvecProfil('Agent');
-        $this->actingAs($agent);
+        $this->actingAs($this->utilisateurAvecProfil('Agent'));
 
         Livewire::test(RegistrationForm::class)
             ->set('form.sens', 'entrant')
-            ->assertSee('Le service sera choisi par le DGA')
-            ->assertDontSee('Optionnel — si vous choisissez un service');
-
-        $agent->privilegesDirectes()->attach(Privilege::where('cle', 'courriers.envoyer_direct_service')->value('id'));
-
-        // hasPrivilege() est mémoïsé via once() pour la durée de l'instance
-        // PHP (voir notes internes) : relire l'utilisateur et
-        // ré-authentifier avant de revérifier, sinon la liste de privilèges
-        // mise en cache AVANT l'attach() ci-dessus persiste.
-        $this->actingAs(User::find($agent->id));
-
-        Livewire::test(RegistrationForm::class)
-            ->set('form.sens', 'entrant')
-            ->assertDontSee('Le service sera choisi par le DGA')
-            ->assertSee('Optionnel — si vous choisissez un service');
+            ->assertSee('Le service sera choisi au moment du transfert')
+            ->assertDontSee('wire:model.live="departementSelectionneId"', false)
+            ->set('form.sens', 'sortant')
+            ->assertDontSee('Le service sera choisi au moment du transfert');
     }
 
     public function test_un_courrier_sortant_non_sinistre_saute_la_validation_dga(): void
@@ -458,7 +366,7 @@ class RegistrationFormTest extends TestCase
             ->set('form.service_id', $service->id)
             ->set('form.objet', 'Courrier avec pièce jointe')
             ->set('form.type_document', 'Lettre')
-            ->set('pieceJointe', UploadedFile::fake()->create('copie.pdf', 100, 'application/pdf'))
+            ->set('nouvellesPiecesJointes', [UploadedFile::fake()->create('copie.pdf', 100, 'application/pdf')])
             ->call('enregistrer');
 
         $response->assertHasNoErrors();
@@ -837,7 +745,7 @@ class RegistrationFormTest extends TestCase
             ->set('form.sens', 'entrant')
             ->set('form.objet', 'Courrier scanné')
             ->set('form.type_document', 'Lettre')
-            ->set('pieceJointe', UploadedFile::fake()->create('copie.pdf', 100, 'application/pdf'))
+            ->set('nouvellesPiecesJointes', [UploadedFile::fake()->create('copie.pdf', 100, 'application/pdf')])
             ->call('enregistrer')
             ->assertHasNoErrors();
 
@@ -850,6 +758,94 @@ class RegistrationFormTest extends TestCase
         $pieceJointe = $courrier->piecesJointes()->firstOrFail();
         $this->assertStringStartsWith("courriers/{$this->anneeCourante()}/_en_attente/{$courrier->numero_reference}/", $pieceJointe->fichier_path);
         Storage::disk('s3')->assertExists($pieceJointe->fichier_path);
+    }
+
+    // 2026-10-23, demande explicite de l'utilisateur : « l'agent doit pouvoir
+    // choisir plus d'un fichier pour enregistrer un courrier, comme une
+    // facture et un simple courrier envoyés par la même personne ».
+    public function test_plusieurs_pieces_jointes_peuvent_etre_jointes_en_une_seule_selection(): void
+    {
+        Storage::fake('s3');
+        Queue::fake([ReplicateFichierJob::class]);
+        $service = Service::factory()->create(['code' => 'DIR']);
+        $this->actingAs($this->utilisateurAvecProfil('Agent'));
+
+        Livewire::test(RegistrationForm::class)
+            ->set('form.sens', 'sortant')
+            ->set('form.date_mouvement', now()->format('Y-m-d'))
+            ->set('form.service_id', $service->id)
+            ->set('form.objet', 'Facture et lettre du même expéditeur')
+            ->set('form.type_document', 'Lettre')
+            ->set('nouvellesPiecesJointes', [
+                UploadedFile::fake()->create('facture.pdf', 100, 'application/pdf'),
+                UploadedFile::fake()->create('lettre.pdf', 100, 'application/pdf'),
+            ])
+            ->assertSet('nouvellesPiecesJointes', [])
+            ->assertCount('piecesJointes', 2)
+            ->call('enregistrer')
+            ->assertHasNoErrors();
+
+        $courrier = $service->courriers()->firstOrFail();
+
+        $this->assertEqualsCanonicalizing(['facture.pdf', 'lettre.pdf'], $courrier->piecesJointes()->pluck('nom_original')->all());
+        foreach ($courrier->piecesJointes as $pieceJointe) {
+            Storage::disk('s3')->assertExists($pieceJointe->fichier_path);
+        }
+        $this->assertSame(2, CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'ajout_piece_jointe')->count());
+        Queue::assertPushed(ReplicateFichierJob::class, 2);
+    }
+
+    // Les fichiers peuvent être choisis en plusieurs fois (le champ se vide
+    // après chaque choix, la liste s'allonge) et retirés avant l'enregistrement.
+    public function test_les_pieces_jointes_se_cumulent_et_peuvent_etre_retirees_avant_lenregistrement(): void
+    {
+        Storage::fake('s3');
+        Queue::fake([ReplicateFichierJob::class]);
+        $service = Service::factory()->create(['code' => 'DIR']);
+        $this->actingAs($this->utilisateurAvecProfil('Agent'));
+
+        Livewire::test(RegistrationForm::class)
+            ->set('form.sens', 'sortant')
+            ->set('form.date_mouvement', now()->format('Y-m-d'))
+            ->set('form.service_id', $service->id)
+            ->set('form.objet', 'Courrier avec plusieurs pièces')
+            ->set('form.type_document', 'Lettre')
+            ->set('nouvellesPiecesJointes', [UploadedFile::fake()->create('erreur.pdf', 100, 'application/pdf')])
+            ->set('nouvellesPiecesJointes', [
+                UploadedFile::fake()->create('facture.pdf', 100, 'application/pdf'),
+                UploadedFile::fake()->image('recu.jpg', 1200, 1600),
+            ])
+            ->assertCount('piecesJointes', 3)
+            ->call('retirerPieceJointe', 0)
+            ->assertCount('piecesJointes', 2)
+            ->call('enregistrer')
+            ->assertHasNoErrors();
+
+        $this->assertEqualsCanonicalizing(['facture.pdf', 'recu.jpg'], $service->courriers()->firstOrFail()->piecesJointes()->pluck('nom_original')->all());
+    }
+
+    public function test_un_fichier_au_mauvais_format_est_refuse_sans_toucher_aux_fichiers_deja_choisis(): void
+    {
+        $this->actingAs($this->utilisateurAvecProfil('Agent'));
+
+        Livewire::test(RegistrationForm::class)
+            ->set('nouvellesPiecesJointes', [UploadedFile::fake()->create('facture.pdf', 100, 'application/pdf')])
+            ->set('nouvellesPiecesJointes', [UploadedFile::fake()->create('virus.exe', 100, 'application/octet-stream')])
+            ->assertHasErrors('piecesJointes')
+            ->assertCount('piecesJointes', 1)
+            ->assertSet('nouvellesPiecesJointes', []);
+    }
+
+    public function test_dix_pieces_jointes_au_maximum(): void
+    {
+        $this->actingAs($this->utilisateurAvecProfil('Agent'));
+
+        $fichiers = array_map(fn (int $i) => UploadedFile::fake()->create("piece-{$i}.pdf", 10, 'application/pdf'), range(1, 12));
+
+        Livewire::test(RegistrationForm::class)
+            ->set('nouvellesPiecesJointes', $fichiers)
+            ->assertCount('piecesJointes', 10)
+            ->assertHasErrors('piecesJointes');
     }
 
     public function test_juin_et_juillet_ne_sont_pas_confondus_dans_la_date_du_tampon(): void
@@ -912,6 +908,27 @@ class RegistrationFormTest extends TestCase
             ->assertSet('form.type_document', 'Réclamation')
             ->assertSet('champsProposesAutomatiquement', true)
             ->assertSee('à vérifier');
+    }
+
+    // 2026-10-30 (« loading state … when it starts extracting OCR and
+    // pre-filling ») — écran de chargement tant que l'OCR du document
+    // principal tourne ; retiré et champs pré-remplis dès la fin (événement
+    // temps réel brouillonOcrTermine()).
+    public function test_lecran_de_chargement_saffiche_pendant_lextraction_puis_disparait(): void
+    {
+        $agent = $this->utilisateurAvecProfil('Agent');
+        $brouillon = $this->brouillon($agent, ['ocr_statut' => 'en_cours', 'texte_ocr' => null, 'numero_tampon_detecte' => null]);
+        $this->actingAs($agent);
+
+        $test = Livewire::test(RegistrationForm::class, ['brouillonId' => $brouillon->id])
+            ->assertSee(__('Extraction du texte et pré-remplissage…'))
+            ->assertSee(__('Continuer sans attendre'));
+
+        $brouillon->update(['ocr_statut' => 'reussi', 'texte_ocr' => "Yaoundé, le 07 Janvier 2026\n\nObjet : Défis Actuels\n\nMonsieur,"]);
+
+        $test->call('brouillonOcrTermine')
+            ->assertDontSee(__('Extraction du texte et pré-remplissage…'))
+            ->assertSet('form.objet', 'Défis Actuels');
     }
 
     public function test_lobjet_est_extrait_de_la_convention_objet_deux_points(): void
@@ -1386,7 +1403,7 @@ class RegistrationFormTest extends TestCase
         $this->actingAs($agent);
 
         Livewire::test(RegistrationForm::class, ['brouillonId' => $brouillon->id])
-            ->assertSee('Fichier supplémentaire')
+            ->assertSee('Fichiers supplémentaires')
             ->assertSee('sera automatiquement rattaché comme document principal')
             ->assertDontSee('Un courrier physique sans copie numérique sera numérisé au Module 2.');
     }
@@ -1399,7 +1416,7 @@ class RegistrationFormTest extends TestCase
 
         Livewire::test(RegistrationForm::class)
             ->assertSee('Un courrier physique sans copie numérique sera numérisé au Module 2.')
-            ->assertDontSee('Fichier supplémentaire');
+            ->assertDontSee('Fichiers supplémentaires');
     }
 
     public function test_les_documents_scannes_non_enregistres_sont_listes(): void
@@ -1653,10 +1670,185 @@ class RegistrationFormTest extends TestCase
         $this->actingAs($this->utilisateurAvecProfil('Agent'));
 
         Livewire::test(RegistrationForm::class)
-            ->set('document', UploadedFile::fake()->create('scan.pdf', 500, 'application/pdf'))
+            ->set('documentsImportes', [UploadedFile::fake()->create('scan.pdf', 500, 'application/pdf')])
             ->call('importerFichier');
 
         $this->assertSame(CourrierBrouillon::SOURCE_MANUEL, CourrierBrouillon::firstOrFail()->source);
+    }
+
+    // 2026-10-23, demande explicite de l'utilisateur (étape 1 « Scan /
+    // Import du document ») : « on doit pouvoir sélectionner plusieurs
+    // fichiers ici, pas un seul » — ex. une lettre et la facture du même
+    // expéditeur. Le premier fichier devient le document principal (lu pour
+    // le pré-remplissage), les autres sont joints au même courrier.
+    public function test_plusieurs_fichiers_importes_en_une_fois_le_premier_devient_le_document_principal(): void
+    {
+        Storage::fake('s3');
+        Queue::fake();
+
+        $this->actingAs($this->utilisateurAvecProfil('Agent'));
+
+        $composant = Livewire::test(RegistrationForm::class)
+            ->set('documentsImportes', [
+                UploadedFile::fake()->create('lettre.pdf', 300, 'application/pdf'),
+                UploadedFile::fake()->create('facture.pdf', 300, 'application/pdf'),
+            ])
+            ->call('importerFichier')
+            ->assertHasNoErrors()
+            ->assertSet('documentsImportes', []);
+
+        $lettre = CourrierBrouillon::where('nom_original', 'lettre.pdf')->firstOrFail();
+        $facture = CourrierBrouillon::where('nom_original', 'facture.pdf')->firstOrFail();
+
+        $composant
+            ->assertSet('brouillonId', $lettre->id)
+            ->assertSet('brouillonsSupplementairesIds', [$facture->id])
+            ->assertSee('Autres documents de ce courrier');
+
+        $this->assertSame([CourrierBrouillon::SOURCE_MANUEL], CourrierBrouillon::pluck('source')->unique()->values()->all());
+        Queue::assertPushed(ProcessBrouillonOcr::class, 2);
+    }
+
+    // Un document déjà scanné et en attente (ex. la facture passée au
+    // scanner juste après la lettre) est joint au courrier : à
+    // l'enregistrement il devient une pièce jointe, rangée sous le même
+    // numéro de référence (Règle n°4), tracée (Règle n°5), et son brouillon
+    // disparaît de la liste d'attente. Son OCR non encore lancé ne bloque
+    // pas l'enregistrement — seul le document principal est lu.
+    public function test_un_document_scanne_joint_devient_une_piece_jointe_a_lenregistrement(): void
+    {
+        Storage::fake('s3');
+        Queue::fake([ReplicateFichierJob::class, IndexCourrierJob::class]);
+
+        $agent = $this->utilisateurAvecProfil('Agent');
+        $service = Service::factory()->create(['code' => 'DIR']);
+        Storage::disk('s3')->put('brouillons/uuid-test.pdf', 'contenu de la lettre');
+        Storage::disk('s3')->put('brouillons/facture.pdf', 'contenu de la facture');
+        $principal = $this->brouillon($agent);
+        $facture = $this->brouillon($agent, [
+            'fichier_path' => 'brouillons/facture.pdf',
+            'nom_original' => 'facture.pdf',
+            'ocr_statut' => 'non_traite',
+            'texte_ocr' => null,
+            'numero_tampon_detecte' => null,
+        ]);
+
+        $this->actingAs($agent);
+
+        Livewire::test(RegistrationForm::class, ['brouillonId' => $principal->id])
+            ->assertSee('Joindre aussi un document scanné en attente')
+            ->call('joindreBrouillon', $facture->id)
+            ->assertSet('brouillonsSupplementairesIds', [$facture->id])
+            ->set('form.sens', 'sortant')
+            ->set('form.service_id', $service->id)
+            ->set('form.objet', 'Lettre et facture')
+            ->set('form.type_document', 'Lettre')
+            ->call('enregistrer')
+            ->assertHasNoErrors()
+            ->assertSet('brouillonsSupplementairesIds', []);
+
+        $courrier = $service->courriers()->firstOrFail();
+        $pieceJointe = $courrier->piecesJointes()->sole();
+
+        $this->assertSame('facture.pdf', $pieceJointe->nom_original);
+        $this->assertStringStartsWith("courriers/{$this->anneeCourante()}/DIR/{$courrier->numero_reference}/", $pieceJointe->fichier_path);
+        Storage::disk('s3')->assertExists($pieceJointe->fichier_path);
+        Storage::disk('s3')->assertMissing('brouillons/facture.pdf');
+        $this->assertDatabaseCount('courrier_brouillons', 0);
+        $this->assertDatabaseHas('courrier_historiques', [
+            'courrier_id' => $courrier->id,
+            'action' => 'ajout_piece_jointe',
+            'commentaire' => 'facture.pdf',
+        ]);
+        Queue::assertPushedOn('replication', ReplicateFichierJob::class, fn (ReplicateFichierJob $job) => $job->chemin === $pieceJointe->fichier_path);
+    }
+
+    // L'ordre de sélection ne suit pas toujours l'intention de l'agent : un
+    // document joint peut devenir le document principal, et un document
+    // retiré redevient simplement « en attente ».
+    public function test_un_document_joint_peut_devenir_principal_ou_etre_retire(): void
+    {
+        $agent = $this->utilisateurAvecProfil('Agent');
+        $facture = $this->brouillon($agent, ['nom_original' => 'facture.pdf']);
+        $lettre = $this->brouillon($agent, ['nom_original' => 'lettre.pdf']);
+        $annexe = $this->brouillon($agent, ['nom_original' => 'annexe.pdf']);
+
+        $this->actingAs($agent);
+
+        Livewire::test(RegistrationForm::class, ['brouillonId' => $facture->id])
+            ->call('joindreBrouillon', $lettre->id)
+            ->call('joindreBrouillon', $annexe->id)
+            ->call('utiliserCommePrincipal', $lettre->id)
+            ->assertSet('brouillonId', $lettre->id)
+            ->assertSet('brouillonsSupplementairesIds', [$facture->id, $annexe->id])
+            ->call('retirerBrouillon', $annexe->id)
+            ->assertSet('brouillonsSupplementairesIds', [$facture->id])
+            // « Annuler » sur le document principal : le premier document
+            // joint prend sa place.
+            ->call('annulerDocument')
+            ->assertSet('brouillonId', $facture->id)
+            ->assertSet('brouillonsSupplementairesIds', []);
+
+        $this->assertDatabaseCount('courrier_brouillons', 3);
+        $this->assertSame(0, CourrierBrouillon::whereNotNull('finalise_le')->count());
+    }
+
+    // Règle n°6 — jamais fait confiance à un ID de brouillon venu du client :
+    // le document scanné manuellement par un autre agent ne peut être joint
+    // ni par l'action, ni en forgeant la liste des documents joints.
+    public function test_un_agent_ne_peut_pas_joindre_le_document_scanne_dun_autre_agent(): void
+    {
+        $agent = $this->utilisateurAvecProfil('Agent');
+        $autreAgent = $this->utilisateurAvecProfil('Agent');
+        $principal = $this->brouillon($agent);
+        $brouillonAutre = $this->brouillon($autreAgent, ['nom_original' => 'autre.pdf']);
+
+        $this->actingAs($agent);
+
+        Livewire::test(RegistrationForm::class, ['brouillonId' => $principal->id])
+            ->call('joindreBrouillon', $brouillonAutre->id)
+            ->assertForbidden();
+
+        Livewire::test(RegistrationForm::class, ['brouillonId' => $principal->id])
+            ->set('brouillonsSupplementairesIds', [$brouillonAutre->id])
+            ->assertForbidden();
+    }
+
+    public function test_dix_documents_scannes_au_maximum_par_courrier(): void
+    {
+        Storage::fake('s3');
+        Queue::fake();
+
+        $this->actingAs($this->utilisateurAvecProfil('Agent'));
+
+        $fichiers = array_map(fn (int $i) => UploadedFile::fake()->create("scan-{$i}.pdf", 10, 'application/pdf'), range(1, 11));
+
+        Livewire::test(RegistrationForm::class)
+            ->set('documentsImportes', $fichiers)
+            ->call('importerFichier')
+            ->assertHasErrors('documentsImportes')
+            ->assertSet('documentsImportes', []);
+
+        $this->assertDatabaseCount('courrier_brouillons', 0);
+    }
+
+    // 2026-10-29 (« where can i see the mes courrier it should be a button at
+    // the bottom of the register courrier form ») — même droit que la page.
+    public function test_le_formulaire_mene_a_mes_courriers_pour_qui_peut_les_voir(): void
+    {
+        $agent = $this->utilisateurAvecProfil('Agent');
+        $this->assertTrue($agent->hasPrivilege('courriers.voir_mes_courriers'), 'privilège par défaut de l\'agent');
+
+        $this->actingAs($agent);
+        Livewire::test(RegistrationForm::class)
+            ->assertSee(__('Mes courriers'))
+            ->assertSeeHtml(e(route('courriers.mes-courriers')));
+
+        $agent->profil->privileges()->detach(Privilege::where('cle', 'courriers.voir_mes_courriers')->value('id'));
+
+        $this->actingAs(User::find($agent->id));
+        Livewire::test(RegistrationForm::class)
+            ->assertDontSeeHtml(e(route('courriers.mes-courriers')));
     }
 
     private function anneeCourante(): int

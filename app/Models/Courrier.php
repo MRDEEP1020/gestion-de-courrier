@@ -2,6 +2,9 @@
 
 namespace App\Models;
 
+use App\Jobs\PreparerApercuJob;
+use App\Jobs\ScellerFichierJob;
+use App\Services\ApercuSecurise;
 use App\Services\SlaCalculatorService;
 use App\Services\WorkflowService;
 use Carbon\CarbonInterface;
@@ -59,7 +62,56 @@ class Courrier extends Model
                 $courrier->setRawAttributes(array_merge($courrier->getAttributes(), $reinitialisation), true);
             }
         });
+
+        // Module 9 (2026-10-30, conformité de l'archivage) — empreinte
+        // SHA-256 scellée (ou vérifiée après un déplacement) dès qu'un
+        // fichier est rattaché ou déplacé, quel que soit l'écran qui l'a
+        // fait ; en file d'attente, après la transaction (Règle n°1).
+        // created/updated plutôt que saved + wasRecentlyCreated : ce dernier
+        // reste vrai pour toute la vie de l'instance (chaque nouvel
+        // enregistrement relançait le scellement).
+        // 2026-11-09 — aperçu sécurisé (pages filigranées, voir
+        // App\Services\ApercuSecurise) préparé dès l'arrivée du document, et
+        // de nouveau quand il est remplacé ; jamais pour un simple
+        // déplacement (même contenu, mêmes pages).
+        static::created(function (Courrier $courrier) {
+            if (config('services.archivage.scellement_auto') && $courrier->fichier_path) {
+                ScellerFichierJob::dispatch(EmpreinteFichier::TYPE_COURRIER, $courrier->id)->afterCommit();
+            }
+
+            if (config('services.archivage.apercu_auto') && $courrier->fichier_path) {
+                PreparerApercuJob::dispatch(ApercuSecurise::TYPE_COURRIER, $courrier->id)->afterCommit();
+            }
+        });
+
+        static::updated(function (Courrier $courrier) {
+            if ($courrier->fichier_path && $courrier->documentRemplace && config('services.archivage.apercu_auto')) {
+                app(ApercuSecurise::class)->invalider(ApercuSecurise::TYPE_COURRIER, $courrier->id);
+                PreparerApercuJob::dispatch(ApercuSecurise::TYPE_COURRIER, $courrier->id)->afterCommit();
+            }
+
+            if (! config('services.archivage.scellement_auto')) {
+                return;
+            }
+
+            // Nouvelle numérisation : nouvelle empreinte (jamais une alerte
+            // « fichier modifié »), même si le chemin n'a pas changé.
+            if ($courrier->fichier_path && ($courrier->wasChanged('fichier_path') || $courrier->documentRemplace)) {
+                ScellerFichierJob::dispatch(EmpreinteFichier::TYPE_COURRIER, $courrier->id, $courrier->documentRemplace)->afterCommit();
+            }
+
+            if ($courrier->fichier_pdfa_path && $courrier->wasChanged('fichier_pdfa_path')) {
+                ScellerFichierJob::dispatch(EmpreinteFichier::TYPE_COURRIER_PDFA, $courrier->id)->afterCommit();
+            }
+        });
     }
+
+    // 2026-11-09 — positionné par l'écran qui dépose un NOUVEAU fichier pour
+    // un courrier existant (ScanForm, nouvelle numérisation) avant update() :
+    // nouvelle empreinte et nouvel aperçu, là où un déplacement (acceptation
+    // par le service) se contente de vérifier l'ancienne empreinte. Propriété
+    // PHP ordinaire, jamais une colonne.
+    public bool $documentRemplace = false;
 
     // Module 5/7 — courrier encore actif dont l'échéance est dépassée.
     // 2026-09-24 (audit du tableau de bord, décision "fixed all as you see
@@ -106,6 +158,9 @@ class Courrier extends Model
     // confidentiel=2/tres_confidentiel=3 avant cette date).
     protected $fillable = [
         'numero_reference',
+        // 2026-11-09 — scan d'origine (rangement du fichier sur le poste de
+        // numérisation, voir App\Concerns\RangementScansLocaux).
+        'brouillon_origine_id',
         'numero_tampon_detecte',
         'reference_externe',
         'sens',
@@ -155,11 +210,21 @@ class Courrier extends Model
         'classement_regle_id',
         'classement_propose_le',
         'classement_analyse_le',
+        // 2026-10-30 — conformité de l'archivage (copie PDF/A, conservation).
+        'fichier_pdfa_path',
+        'archive_le',
+        'conserver_jusqua',
+        'prolongation_annees',
+        'gel_juridique',
     ];
 
     protected function casts(): array
     {
         return [
+            'archive_le' => 'datetime',
+            'conserver_jusqua' => 'date',
+            'prolongation_annees' => 'integer',
+            'gel_juridique' => 'boolean',
             'date_mouvement' => 'date',
             'echeance' => 'date',
             'date_limite' => 'date',
@@ -281,6 +346,50 @@ class Courrier extends Model
         return $this->hasOne(Decharge::class)->whereNull('rendu_le')->latestOfMany('emprunte_le');
     }
 
+    // Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au service
+    // et acceptation") — transferts vers un service, le plus récent en tête :
+    // un courrier refusé puis réorienté en a plusieurs.
+    public function transferts(): HasMany
+    {
+        return $this->hasMany(TransfertService::class)->latest('id');
+    }
+
+    // Transfert en cours ou dernier transfert décidé (relation "ofMany",
+    // utilisable dans with()/whereHas() comme affectationCourante()).
+    public function dernierTransfert(): HasOne
+    {
+        return $this->hasOne(TransfertService::class)->latestOfMany();
+    }
+
+    // 2026-10-29 (« it should appear only when a condition is met », ordre
+    // choisi : remise → signature → affectation) — après l'acceptation d'un
+    // transfert, le circuit attend que l'accueil remette l'original PUIS que
+    // le service signe sa réception avant d'affecter ou de transmettre le
+    // courrier. Vrai quand il n'y a rien à attendre : aucun transfert (pli
+    // confidentiel remis directement, courrier sortant…), transfert non
+    // accepté, ou décharge remise ET signée.
+    public function dechargeTerminee(): bool
+    {
+        $transfert = $this->dernierTransfert;
+
+        if ($transfert === null || ! $transfert->estAccepte()) {
+            return true;
+        }
+
+        return $transfert->original_remis_le !== null && $transfert->reception_signee_le !== null;
+    }
+
+    // 2026-10-29 (« le bouton Marquer original doit être marqué avant de
+    // traiter le courrier ») — l'original papier a été remis au service.
+    // Vrai quand il n'y a rien à remettre : aucun transfert ou transfert non
+    // accepté (mêmes cas que dechargeTerminee() ci-dessus).
+    public function originalRemis(): bool
+    {
+        $transfert = $this->dernierTransfert;
+
+        return $transfert === null || ! $transfert->estAccepte() || $transfert->original_remis_le !== null;
+    }
+
     // Module 2/3 — texte OCR utilisable pour le classement/les mots-clés
     // uniquement s'il a été jugé lisible ("après un OCR réussi" — voir
     // DECISIONS.md Module 3). Un texte en echec_qualite est du bruit
@@ -325,6 +434,9 @@ class Courrier extends Model
     {
         return $this->destinataire_transfert_id === $user->id
             || $this->service?->responsable_id === $user->id
+            // 2026-10-23 — le responsable d'une entité au-dessus (ex. la
+            // Direction) suit aussi ce courrier (User::idsServicesSupervises()).
+            || ($this->service_id !== null && in_array($this->service_id, $user->idsServicesSupervises(), true))
             || $this->affectationCourante?->user_id === $user->id
             || $this->estCreeParUtilisateur($user);
     }
@@ -354,23 +466,23 @@ class Courrier extends Model
 
     // Module 1/4 — segment "service" utilisé pour construire un chemin de
     // stockage (courriers/{annee}/{segment}/...) — voir RegistrationForm,
-    // PieceJointeService, ScanForm, WorkflowService::validerService(). Un
-    // courrier entrant en attente de validation DGA/ADJ n'a pas encore de
-    // service (voir DECISIONS.md, synchronisation SRS-GEC.pdf) : ses fichiers
+    // PieceJointeService, ScanForm, WorkflowService::accepterTransfert(). Un
+    // courrier entrant pas encore transféré n'a pas de service : ses fichiers
     // sont provisoirement rangés sous ce segment, puis déplacés vers le vrai
-    // code service une fois `service_id` assigné par le DGA.
+    // code service quand le service l'ACCEPTE (2026-10-23, voir DECISIONS.md
+    // "Transfert direct au service et acceptation").
     public const SEGMENT_SERVICE_EN_ATTENTE = '_en_attente';
 
     // Libellé affiché de chaque statut — seul point de vérité (badge, filtre
-    // "Tous les courriers", bordereau PDF). 'enregistre' est le 3e
-    // sous-statut "Transféré" du SRS (voir WorkflowService, décision du
-    // 2026-09-15 de ne pas ajouter de valeur d'enum) : affiché comme tel
-    // plutôt que "Enregistre", qui laissait croire à un retour en arrière
-    // après la validation DGA (demande de l'utilisateur, 2026-09-24).
+    // "Tous les courriers", bordereau PDF). 2026-10-23 (voir DECISIONS.md
+    // "Transfert direct au service et acceptation") : plus de DGA, les deux
+    // statuts de transfert existants changent de sens sans nouvelle valeur
+    // d'ENUM — 'en_cours_de_transfert' = transféré, en attente de
+    // l'acceptation du service ; 'enregistre' = accepté, à affecter.
     public const LIBELLES_STATUT = [
         'en_attente_de_transfert' => 'En attente de transfert',
-        'en_cours_de_transfert' => 'En cours de transfert',
-        'enregistre' => 'Transféré — à affecter',
+        'en_cours_de_transfert' => 'En attente d\'acceptation',
+        'enregistre' => 'Accepté — à affecter',
         'affecte' => 'Affecté',
         'en_traitement' => 'En traitement',
         'en_validation' => 'En validation',
@@ -399,12 +511,11 @@ class Courrier extends Model
     // cumulatif, même principe opt-in que le gate dossier ci-dessus : un
     // utilisateur SANS périmètre assigné (organizationUnitsPerimetre vide)
     // n'est pas restreint par ce gate. Un courrier SANS service_id (entrant
-    // en attente de validation DGA/ADJ, voir SEGMENT_SERVICE_EN_ATTENTE)
-    // n'est jamais affecté par ce gate non plus — même principe que le gate
-    // dossier : on ne restreint que ce qui porte réellement l'attribut
-    // gaté, sinon validerService() (qui autorise justement sur le courrier
-    // AVANT que service_id ne soit posé) serait cassée pour tout DGA ayant
-    // un périmètre assigné. Sinon, l'utilisateur ne voit/n'agit que sur les
+    // pas encore transféré, voir SEGMENT_SERVICE_EN_ATTENTE) n'est jamais
+    // affecté par ce gate non plus — même principe que le gate dossier : on
+    // ne restreint que ce qui porte réellement l'attribut gaté, sinon un
+    // agent ayant un périmètre assigné ne verrait plus ses propres courriers
+    // à transférer. Sinon, l'utilisateur ne voit/n'agit que sur les
     // courriers dont le service (via le pont OrganizationUnit::service_id)
     // est sous l'une des entités accordées.
     public function estDansLePerimetreDe(User $user): bool
@@ -451,6 +562,13 @@ class Courrier extends Model
 
                 if ($user->hasPrivilege('courriers.voir_service')) {
                     $q->orWhereHas('service', fn ($q) => $q->where('responsable_id', $user->id));
+
+                    // 2026-10-23 — et les services des unités placées sous une
+                    // entité qu'il dirige (ex. une Direction et ses
+                    // départements), en lecture seule.
+                    if (! empty($servicesSupervises = $user->idsServicesSupervises())) {
+                        $q->orWhereIn('service_id', $servicesSupervises);
+                    }
                 }
 
                 if ($user->hasPrivilege('courriers.voir_propre')) {
@@ -461,22 +579,11 @@ class Courrier extends Model
                     $q->orWhereHas('affectationCourante', fn ($q) => $q->where('user_id', $user->id));
                 }
 
-                if ($user->hasPrivilege('courriers.voir_dga')) {
-                    $q->orWhere(fn ($q) => $q->where('statut', 'en_cours_de_transfert')
-                        ->where(fn ($q) => $q->whereNull('destinataire_transfert_id')->orWhere('destinataire_transfert_id', $user->id)));
-                }
-
-                // 2026-10-06 (entretien terrain, voir DECISIONS.md
-                // "Délégation DGA/ADJ absents") : un délégataire actif voit
-                // aussi les courriers en attente de validation adressés au(x)
-                // DGA/ADJ qu'il couvre actuellement — indépendant du
-                // privilège courriers.voir_dga (un RH délégataire ne l'a pas).
-                $delegantsIds = $user->delegationsDgaActivesIds();
-
-                if (! empty($delegantsIds)) {
-                    $q->orWhere(fn ($q) => $q->where('statut', 'en_cours_de_transfert')
-                        ->where(fn ($q) => $q->whereNull('destinataire_transfert_id')->orWhereIn('destinataire_transfert_id', $delegantsIds)));
-                }
+                // 2026-10-23 — branches DGA (courriers.voir_dga) et
+                // délégation DGA retirées avec le routage DGA lui-même (voir
+                // DECISIONS.md "Transfert direct au service et acceptation") :
+                // un courrier transféré porte désormais son service, son
+                // responsable le voit via la branche voir_service ci-dessus.
 
                 // Pli confidentiel envoyé directement à cet utilisateur
                 // (2026-09-24) — miroir de la branche équivalente de
@@ -503,6 +610,7 @@ class Courrier extends Model
                 ->whereNull('dossier_classement_id')
                 ->orWhere('destinataire_transfert_id', $user->id)
                 ->orWhereHas('service', fn ($q) => $q->where('responsable_id', $user->id))
+                ->when(! empty($user->idsServicesSupervises()), fn ($q) => $q->orWhereIn('service_id', $user->idsServicesSupervises()))
                 ->orWhereHas('affectationCourante', fn ($q) => $q->where('user_id', $user->id))
                 ->orWhereHas('historiques', fn ($q) => $q->where('action', 'creation')->where('auteur_id', $user->id))
                 ->orWhereHas('dossierClassement', fn ($q) => $q

@@ -140,24 +140,44 @@ class ServiceReelSynchroniseurTest extends TestCase
         $this->assertSame('RC-2', Service::where('nom', 'Recouvrement Contentieux')->value('code'));
     }
 
-    // 2026-10-09 — niveau Direction ajouté (voir le journal de développement) :
-    // "department" est désormais synchronisé (comme Grandes Entreprises/
-    // Para Étatiques, enfants réels d'une Direction, qui reçoivent du
-    // courrier) — seuls Company/Site/Direction restent purement structurels,
-    // jamais pontés. Ce test couvrait auparavant "department", remplacé ici
-    // par "direction" pour tester la même règle sur le type qui en hérite.
-    public function test_une_direction_ne_cree_pas_de_service(): void
+    // 2026-10-23 (voir DECISIONS.md "Transmission descendante par la
+    // Direction") — comportement INVERSÉ : une Direction reçoit désormais du
+    // courrier (son responsable l'accepte puis le transmet à ses
+    // départements), elle a donc son service réel, responsable compris.
+    public function test_une_direction_cree_aussi_un_service(): void
     {
+        $chef = User::factory()->create();
         $avant = Service::count();
 
         Livewire::test(OrganisationIndex::class)
             ->call('ouvrirCreation', $this->departement->parent_id)
             ->set('typeNoeud', OrganizationUnit::TYPE_DIRECTION)
             ->set('nomNoeud', 'Direction Commerciale')
+            ->set('responsableIdNoeud', $chef->id)
             ->call('enregistrerNoeud')
             ->assertHasNoErrors();
 
-        $this->assertSame($avant, Service::count());
+        $this->assertSame($avant + 1, Service::count());
+        $direction = OrganizationUnit::where('name', 'Direction Commerciale')->firstOrFail();
+        $this->assertSame($chef->id, $direction->service->responsable_id);
+    }
+
+    // 2026-10-26 (voir DECISIONS.md "Titres des chefs et Direction
+    // Générale") — le Site est ponté à son tour (la Direction Générale reçoit
+    // des courriers) ; seule Company reste purement structurelle.
+    public function test_un_site_cree_aussi_son_service(): void
+    {
+        $avant = Service::count();
+
+        Livewire::test(OrganisationIndex::class)
+            ->call('ouvrirCreation', null)
+            ->set('typeNoeud', OrganizationUnit::TYPE_SITE)
+            ->set('nomNoeud', 'Douala')
+            ->call('enregistrerNoeud')
+            ->assertHasNoErrors();
+
+        $this->assertSame($avant + 1, Service::count());
+        $this->assertSame('Douala', OrganizationUnit::where('name', 'Douala')->firstOrFail()->service->nom);
     }
 
     public function test_un_departement_cree_bien_un_service(): void

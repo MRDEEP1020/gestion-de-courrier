@@ -71,15 +71,15 @@ class ProfilListTest extends TestCase
     {
         $this->actingAs($this->utilisateurAvecProfil('Administrateur'));
         $agent = $this->utilisateurAvecProfil('Agent');
-        $privilege = Privilege::where('cle', 'courriers.voir_dga')->firstOrFail();
+        $privilege = Privilege::where('cle', 'courriers.voir_transferes')->firstOrFail();
 
         $composant = Livewire::test(ProfilList::class)->call('ouvrirPermissions', $agent->profil_id);
 
         $composant->call('basculerPermission', $privilege->id);
-        $this->assertTrue(User::find($agent->id)->hasPrivilege('courriers.voir_dga'));
+        $this->assertTrue(User::find($agent->id)->hasPrivilege('courriers.voir_transferes'));
 
         $composant->call('basculerPermission', $privilege->id);
-        $this->assertFalse(User::find($agent->id)->hasPrivilege('courriers.voir_dga'));
+        $this->assertFalse(User::find($agent->id)->hasPrivilege('courriers.voir_transferes'));
     }
 
     public function test_la_modale_groupe_les_permissions_par_module(): void
@@ -169,7 +169,7 @@ class ProfilListTest extends TestCase
         $gestionnaire->privilegesDirectes()->detach();
         $this->actingAs(User::find($gestionnaire->id));
 
-        $composant->call('basculerPermission', Privilege::where('cle', 'courriers.voir_dga')->value('id'))->assertForbidden();
+        $composant->call('basculerPermission', Privilege::where('cle', 'courriers.voir_transferes')->value('id'))->assertForbidden();
     }
 
     // Même garde-fou anti-verrouillage que PrivilegePolicy::gerer().

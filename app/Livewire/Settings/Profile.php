@@ -2,50 +2,52 @@
 
 namespace App\Livewire\Settings;
 
-use App\Concerns\ProfileValidationRules;
+use App\Models\OrganizationUnit;
+use App\Services\AvatarService;
 use Flux\Flux;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Livewire\WithFileUploads;
 
+// 2026-10-26 (demande de l'utilisateur) — même présentation que la modale
+// « Modifier l'utilisateur » de Utilisateurs & Accès (fiche + « Aperçu du
+// compte »). Précisé le même jour : nom, prénom, email et téléphone ne sont
+// modifiables QUE par l'administrateur. L'utilisateur ne change ici que sa
+// photo ; tout le reste est affiché en lecture seule. Aucune propriété
+// publique ne porte ces données : rien ne peut être forcé depuis le client
+// (Règle n°6).
 #[Title('Profile settings')]
 class Profile extends Component
 {
-    use ProfileValidationRules;
+    use WithFileUploads;
 
-    public string $name = '';
+    // Exception à la Règle n°2 (upload natif de Livewire), comme UserList.
+    public $photo = null;
 
-    public string $email = '';
-
-    /**
-     * Mount the component.
-     */
-    public function mount(): void
+    // Enregistrée dès qu'elle est choisie (pas de bouton à part).
+    public function updatedPhoto(AvatarService $avatars): void
     {
-        $this->name = Auth::user()->name;
-        $this->email = Auth::user()->email;
+        $this->validate(
+            ['photo' => ['required', 'image', 'mimes:jpg,jpeg,png', 'max:2048']],
+            [],
+            ['photo' => __('photo')],
+        );
+
+        $avatars->televerser(Auth::user(), $this->photo);
+        $this->reset('photo');
+
+        Flux::toast(variant: 'success', text: __('Photo mise à jour.'));
     }
 
-    /**
-     * Update the profile information for the currently authenticated user.
-     */
-    public function updateProfileInformation(): void
+    public function retirerPhoto(AvatarService $avatars): void
     {
-        $user = Auth::user();
+        $avatars->supprimer(Auth::user());
+        $this->reset('photo');
 
-        $validated = $this->validate($this->profileRules($user->id));
-
-        $user->fill($validated);
-
-        if ($user->isDirty('email')) {
-            $user->email_verified_at = null;
-        }
-
-        $user->save();
-
-        Flux::toast(variant: 'success', text: __('Profile updated.'));
+        Flux::toast(text: __('Photo retirée.'));
     }
 
     /**
@@ -74,11 +76,29 @@ class Profile extends Component
         return $user instanceof MustVerifyEmail && ! $user->hasVerifiedEmail();
     }
 
+    // Même découpage Nom / Prénom que UserList (premier mot = nom).
     #[Computed]
-    public function showDeleteUser(): bool
+    public function nomPrenom(): array
     {
-        $user = Auth::user();
+        $morceaux = explode(' ', Auth::user()->name, 2);
 
-        return ! $user instanceof MustVerifyEmail || $user->hasVerifiedEmail();
+        return ['nom' => $morceaux[0] ?? '', 'prenom' => $morceaux[1] ?? ''];
+    }
+
+    // Chemin complet de son entité (ex. « Direction Générale / Direction
+    // Financière et Comptable / Service Trésorerie »).
+    #[Computed]
+    public function cheminEntite(): ?string
+    {
+        $entite = Auth::user()->entitePrincipale();
+
+        return $entite?->cheminComplet(OrganizationUnit::query()->get(['id', 'parent_id', 'name']));
+    }
+
+    // Personnes à qui il peut transférer un courrier (choisies par l'administrateur).
+    #[Computed]
+    public function destinatairesTransfert()
+    {
+        return Auth::user()->destinatairesTransfert()->orderBy('name')->pluck('users.name');
     }
 }

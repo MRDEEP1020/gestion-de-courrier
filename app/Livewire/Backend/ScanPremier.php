@@ -2,6 +2,7 @@
 
 namespace App\Livewire\Backend;
 
+use App\Concerns\RangementScansLocaux;
 use App\Models\Courrier;
 use App\Models\CourrierBrouillon;
 use App\Services\BrouillonScanService;
@@ -20,6 +21,8 @@ use Livewire\WithPagination;
 #[Title('Numériser un nouveau courrier')]
 class ScanPremier extends Component
 {
+    // 2026-11-09 — rangement des scans sur le poste (voir le trait).
+    use RangementScansLocaux;
     use WithFileUploads, WithPagination;
 
     // Exception à la Règle n°2 : mécanisme d'upload natif de Livewire.

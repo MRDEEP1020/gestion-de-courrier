@@ -9,6 +9,7 @@
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 
+
 @fonts
 
 @vite(['resources/css/app.css', 'resources/js/app.js'])
@@ -26,10 +27,32 @@
     toutes lettres dans un commentaire JS cassait la page — Blade ne
     reconnaît pas les commentaires JS, il remplace la directive PARTOUT où
     le texte apparaît dans le fichier, y compris ici.
+
+    2026-10-27 (liste « Phase 7 » : le thème sombre ne doit s'appliquer qu'au
+    compte qui l'a choisi) — la préférence vient désormais du COMPTE
+    (users.apparence), plus du navigateur : elle est réécrite dans
+    flux.appearance à chaque page, juste avant le script d'apparence de Flux.
+    Visiteur non connecté (connexion, mot de passe oublié…) : toujours clair,
+    donc le choix d'un utilisateur ne passe jamais au suivant sur le même
+    poste. « system » = clé retirée (Flux suit alors le réglage de l'OS) ;
+    auparavant, ce choix retombait sur « clair » au rechargement.
 --}}
+@php
+    $apparenceCompte = in_array(auth()->user()?->apparence, ['light', 'dark', 'system'], true)
+        ? auth()->user()->apparence
+        : 'light';
+@endphp
 <script>
-    if (! window.localStorage.getItem('flux.appearance')) {
-        window.localStorage.setItem('flux.appearance', 'light');
-    }
+    (() => {
+        const apparence = @js($apparenceCompte);
+
+        try {
+            if (apparence === 'system') {
+                window.localStorage.removeItem('flux.appearance');
+            } else {
+                window.localStorage.setItem('flux.appearance', apparence);
+            }
+        } catch (e) {}
+    })();
 </script>
 @fluxAppearance

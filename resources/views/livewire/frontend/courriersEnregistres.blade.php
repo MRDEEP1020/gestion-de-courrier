@@ -5,7 +5,7 @@
         </div>
         <div>
             <flux:heading level="1">{{ __('Courriers enregistrés') }}</flux:heading>
-            <flux:subheading>{{ __('Les courriers entrants déjà enregistrés dans le système, par étape du transfert vers le DGA/ADJ DGA.') }}</flux:subheading>
+            <flux:subheading>{{ __('Les courriers entrants déjà enregistrés dans le système, par étape du transfert vers leur service.') }}</flux:subheading>
         </div>
     </div>
 
@@ -14,10 +14,10 @@
             {{ __('En attente de transfert') }}
         </flux:button>
         <flux:button size="sm" :variant="$onglet === 'en_cours_de_transfert' ? 'primary' : 'ghost'" wire:click="changerOnglet('en_cours_de_transfert')">
-            {{ __('En cours de transfert') }}
+            {{ __('En attente d\'acceptation') }}
         </flux:button>
         <flux:button size="sm" :variant="$onglet === 'enregistre' ? 'primary' : 'ghost'" wire:click="changerOnglet('enregistre')">
-            {{ __('Transféré') }}
+            {{ __('Acceptés — à affecter') }}
         </flux:button>
         {{-- 2026-09-24 — suivre les courriers transférés à toutes leurs
              étapes, en lecture seule (voir CourriersEnregistres::ONGLETS). --}}
@@ -33,55 +33,73 @@
             @if ($onglet === 'en_attente_de_transfert')
                 {{ __('Aucun courrier en attente de transfert.') }}
             @elseif ($onglet === 'en_cours_de_transfert')
-                {{ __('Aucun courrier en cours de transfert.') }}
+                {{ __('Aucun courrier en attente d\'acceptation.') }}
             @elseif ($onglet === 'suivi')
                 {{ __('Aucun courrier à suivre pour l\'instant.') }}
             @else
-                {{ __('Aucun courrier transféré pour l\'instant.') }}
+                {{ __('Aucun courrier accepté en attente d\'affectation.') }}
             @endif
         </flux:text>
     @else
         <flux:heading level="2" class="mt-4 text-base">{{ __('Liste des courriers') }} ({{ $this->courriers->total() }})</flux:heading>
 
-        <div class="mt-3 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+        {{-- Format de tableau commun (2026-10-29, « same format on all the tables
+             of the project ») — celui de « Tous les courriers » (voir le
+             commentaire de courrierList.blade.php) : en-têtes en petites
+             capitales soulignés d'un trait navy, lignes sur
+             UNE seule ligne (texte trop long coupé, lisible en entier au
+             survol), 16 px en haut et en bas de chaque cellule ; les colonnes
+             de texte se partagent la place (largeurs en % totalisant 100 %),
+             les autres (w-px) gardent leur contenu. Statut : le badge partagé
+             <x-statut-badge> (mêmes couleurs que partout ailleurs). --}}
+        <div class="@container mt-3 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
             <table class="w-full text-sm">
-                <thead class="bg-brand-table-header text-left text-sm font-medium text-zinc-600 dark:bg-zinc-800">
+                <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
                     <tr>
-                        <th class="py-3 pl-4 pr-3">{{ __('Référence') }}</th>
-                        <th class="py-3 pr-3">{{ __('Objet') }}</th>
-                        <th class="py-3 pr-3">{{ __('Type') }}</th>
-                        <th class="py-3 pr-3">{{ __('Service') }}</th>
+                        <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5 pl-4">{{ __('Référence') }}</th>
+                        <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Objet') }}</th>
+                        <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Type') }}</th>
+                        <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Service') }}</th>
                         @if ($onglet === 'suivi')
-                            <th class="py-3 pr-3">{{ __('Statut') }}</th>
-                            <th class="py-3 pr-3">{{ __('Affecté à') }}</th>
-                            <th class="py-3 pr-4">{{ __('Dernier mouvement') }}</th>
+                            <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Statut') }}</th>
+                            <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Affecté à') }}</th>
+                            <th class="w-px whitespace-nowrap py-3 pr-4">{{ __('Dernier mouvement') }}</th>
                         @else
-                            <th class="py-3 pr-4">{{ __('Date') }}</th>
+                            <th class="w-px whitespace-nowrap py-3 pr-4">{{ __('Date de réception') }}</th>
                         @endif
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
                     @foreach ($this->courriers as $courrier)
+                        @php
+                            $suivi = $onglet === 'suivi';
+                            $serviceLigne = $courrier->service?->nom ?? __('—');
+                            $affecteLigne = $courrier->affectationCourante?->collaborateur?->name ?? __('—');
+                        @endphp
                         <tr class="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800" onclick="window.location='{{ route('courriers.show', $courrier->id) }}'">
-                            <td class="py-3 pl-4 pr-3 font-medium">
-                                <flux:link :href="route('courriers.show', $courrier->id)" wire:navigate class="text-brand-accent">{{ $courrier->numero_reference }}</flux:link>
+                            <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 pl-4 font-medium">
+                                <span class="block max-w-36 truncate" title="{{ $courrier->numero_reference }}"><flux:link :href="route('courriers.show', $courrier->id)" wire:navigate class="text-brand-accent">{{ $courrier->numero_reference }}</flux:link></span>
                             </td>
-                            <td class="py-3 pr-3">{{ $courrier->objet }}</td>
-                            <td class="py-3 pr-3 text-zinc-500">{{ $courrier->type_document }}</td>
-                            <td class="py-3 pr-3 text-zinc-500">{{ $courrier->service?->nom ?? __('—') }}</td>
-                            @if ($onglet === 'suivi')
-                                <td class="py-3 pr-3">
-                                    <span class="{{ match ($courrier->statut) {
-                                        'traite', 'archive' => 'bg-brand-success-light text-brand-success-dark',
-                                        'rejete' => 'bg-brand-danger-light text-brand-danger-dark',
-                                        'en_attente_information' => 'bg-brand-warning-light text-brand-warning-dark',
-                                        default => 'bg-brand-info-light text-brand-info-dark',
-                                    } }} inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium">{{ \App\Models\Courrier::libelleStatut($courrier->statut) }}</span>
+                            <td class="{{ $suivi ? 'w-[40%]' : 'w-[56%]' }} min-w-32 py-4 pr-3 @min-[60rem]:pr-5">
+                                <div class="w-0 min-w-full truncate" title="{{ $courrier->objet }}">{{ $courrier->objet }}</div>
+                            </td>
+                            <td class="{{ $suivi ? 'w-[14%]' : 'w-[18%]' }} min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">
+                                <div class="w-0 min-w-full truncate" title="{{ $courrier->type_document }}">{{ $courrier->type_document }}</div>
+                            </td>
+                            {{-- service null-safe : un courrier à transférer n'a pas encore de service. --}}
+                            <td class="{{ $suivi ? 'w-[22%]' : 'w-[26%]' }} min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">
+                                <div class="w-0 min-w-full truncate" title="{{ $serviceLigne }}">{{ $serviceLigne }}</div>
+                            </td>
+                            @if ($suivi)
+                                <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5">
+                                    <x-statut-badge :statut="$courrier->statut" class="rounded-md! px-2! font-semibold!" />
                                 </td>
-                                <td class="py-3 pr-3 text-zinc-500">{{ $courrier->affectationCourante?->collaborateur?->name ?? __('—') }}</td>
-                                <td class="py-3 pr-4 text-zinc-500">{{ $courrier->updated_at->format('d/m/Y H:i') }}</td>
+                                <td class="w-[24%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">
+                                    <div class="w-0 min-w-full truncate" title="{{ $affecteLigne }}">{{ $affecteLigne }}</div>
+                                </td>
+                                <td class="whitespace-nowrap py-4 pr-4 text-zinc-500">{{ $courrier->updated_at->format('d/m/Y H:i') }}</td>
                             @else
-                                <td class="py-3 pr-4 text-zinc-500">{{ $courrier->date_mouvement->format('d/m/Y') }}</td>
+                                <td class="whitespace-nowrap py-4 pr-4 text-zinc-500">{{ $courrier->date_mouvement->format('d/m/Y') }}</td>
                             @endif
                         </tr>
                     @endforeach

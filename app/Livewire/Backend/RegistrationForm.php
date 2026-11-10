@@ -2,6 +2,8 @@
 
 namespace App\Livewire\Backend;
 
+use App\Concerns\AjoutPiecesJointes;
+use App\Concerns\RangementScansLocaux;
 use App\Jobs\IndexCourrierJob;
 use App\Jobs\ProcessDocumentOcr;
 use App\Jobs\ReplicateFichierJob;
@@ -19,9 +21,11 @@ use App\Services\PieceJointeService;
 use App\Services\WorkflowService;
 use Carbon\Carbon;
 use Flux\Flux;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\On;
@@ -36,6 +40,10 @@ use Throwable;
 #[Title('Enregistrement d\'un courrier')]
 class RegistrationForm extends Component
 {
+    // Plusieurs pièces jointes par courrier (2026-10-23).
+    use AjoutPiecesJointes;
+    // 2026-11-09 — rangement des scans sur le poste (voir le trait).
+    use RangementScansLocaux;
     use WithFileUploads;
     use WithPagination;
 
@@ -44,16 +52,30 @@ class RegistrationForm extends Component
 
     public CourrierForm $form;
 
-    // Exception à la Règle n°2 (propriétés = primitifs) : c'est le mécanisme
-    // d'upload natif de Livewire (TemporaryUploadedFile), pas un modèle Eloquent —
-    // il n'existe pas d'alternative primitive pour recevoir un fichier en amont.
-    public $pieceJointe = null;
-
     // Dossier surveillé (voir DECISIONS.md "Watcher automatique sur le
     // formulaire d'enregistrement") : même rôle que ScanPremier::$document,
     // rempli par resources/js/scan-watcher.js via l'input caché de
     // registrationForm.blade.php, jamais par l'agent directement.
     public $document = null;
+
+    // Étape 1 « Scan / Import » (2026-10-23, demande explicite de
+    // l'utilisateur : « on doit pouvoir sélectionner plusieurs fichiers
+    // ici ») — sélection multiple du bouton "Importer", vidée après chaque
+    // import. Distincte de $document (réservée au dossier surveillé) : jamais
+    // deux champs liés à la même propriété. Même exception à la Règle n°2
+    // que AjoutPiecesJointes (upload natif de Livewire).
+    public array $documentsImportes = [];
+
+    // Autres documents scannés du MÊME courrier (ex. la facture jointe à la
+    // lettre) : IDs de brouillons uniquement (Règle n°2), ré-autorisés à
+    // chaque requête (brouillonsSupplementaires()). Seul le document
+    // principal ($brouillonId) est lu pour le pré-remplissage ; ceux-ci
+    // deviennent des pièces jointes du courrier à l'enregistrement.
+    public array $brouillonsSupplementairesIds = [];
+
+    // Document principal + documents supplémentaires : même plafond que les
+    // pièces jointes de l'étape 3.
+    private const MAX_DOCUMENTS_SCANNES = 10;
 
     public ?string $derniereReference = null;
 
@@ -223,8 +245,8 @@ class RegistrationForm extends Component
     private function activerModeConfidentiel(): void
     {
         $this->modeConfidentiel = true;
-        $this->reset('brouillonId', 'document', 'pieceJointe', 'champsProposesAutomatiquement', 'modeReceptionProposeAutomatiquement');
-        unset($this->brouillon, $this->brouillonsEnAttente);
+        $this->reset('brouillonId', 'document', 'documentsImportes', 'brouillonsSupplementairesIds', 'piecesJointes', 'nouvellesPiecesJointes', 'champsProposesAutomatiquement', 'modeReceptionProposeAutomatiquement');
+        unset($this->brouillon, $this->brouillonsEnAttente, $this->brouillonsSupplementaires);
 
         if ($this->form->confidentialite < 2) {
             $this->form->confidentialite = 2;
@@ -419,41 +441,32 @@ class RegistrationForm extends Component
         // AUSSI optionnelle : si choisie, le Département en dépend ; sinon
         // on reste directement sous le Site (ex. "Département Informatique",
         // qui ne dépend d'aucune Direction).
-        $parentId = $this->directionSelectionneeId ?? $this->siteSelectionneId;
-
-        return OrganizationUnit::enfantsActifsDe($parentId, OrganizationUnit::TYPE_DEPARTMENT);
+        // 2026-10-26 — services rattachés directement inclus (voir
+        // OrganizationUnit::niveauDepartementSous()).
+        return OrganizationUnit::niveauDepartementSous($this->directionSelectionneeId ?? $this->siteSelectionneId);
     }
 
     #[Computed]
     public function unitesDisponibles()
     {
-        if ($this->departementSelectionneId === null) {
-            return collect();
-        }
-
-        return OrganizationUnit::query()
-            ->where('parent_id', $this->departementSelectionneId)
-            ->whereIn('type', [OrganizationUnit::TYPE_SERVICE, OrganizationUnit::TYPE_SUB_SERVICE])
-            ->where('status', OrganizationUnit::STATUT_ACTIF)
-            ->orderBy('name')
-            ->get();
+        return OrganizationUnit::unitesSous($this->departementSelectionneId);
     }
 
     // Changer un niveau vide les niveaux dépendants ET recalcule
-    // $form->service_id via le nœud RÉELLEMENT retenu (Service/Unité choisi,
-    // sinon le Département lui-même — spec §1) ; jamais un choix incohérent
-    // laissé affiché, jamais un service_id périmé après un changement de
-    // niveau supérieur.
+    // $form->service_id via le nœud RÉELLEMENT retenu (le niveau le plus fin
+    // choisi, voir resoudreServiceDepuisCascade()) ; jamais un choix
+    // incohérent laissé affiché, jamais un service_id périmé après un
+    // changement de niveau supérieur.
     public function updatedSiteSelectionneId(): void
     {
         $this->reset('directionSelectionneeId', 'departementSelectionneId', 'uniteSelectionneeId');
-        $this->form->service_id = null;
+        $this->resoudreServiceDepuisCascade();
     }
 
     public function updatedDirectionSelectionneeId(): void
     {
         $this->reset('departementSelectionneId', 'uniteSelectionneeId');
-        $this->form->service_id = null;
+        $this->resoudreServiceDepuisCascade();
     }
 
     public function updatedDepartementSelectionneId(): void
@@ -467,35 +480,30 @@ class RegistrationForm extends Component
         $this->resoudreServiceDepuisCascade();
     }
 
+    // Nœud retenu : Service/Unité, sinon Département (ou Service rattaché
+    // directement), sinon — 2026-10-23, elle a désormais son service réel —
+    // la Direction. Jamais le Site seul : un Site choisi sans rien en dessous
+    // ferait de la Direction Générale l'expéditeur sans que l'agent l'ait voulu.
     private function resoudreServiceDepuisCascade(): void
     {
-        $noeud = $this->uniteSelectionneeId
-            ? OrganizationUnit::find($this->uniteSelectionneeId)
-            : ($this->departementSelectionneId ? OrganizationUnit::find($this->departementSelectionneId) : null);
+        $noeudId = $this->uniteSelectionneeId ?: $this->departementSelectionneId ?: $this->directionSelectionneeId;
 
-        $this->form->service_id = $noeud?->service_id;
+        $this->form->service_id = $noeudId ? OrganizationUnit::whereKey($noeudId)->value('service_id') : null;
     }
 
-    // Même patron que ShowCourrier::preselectionnerCascadeDepuisService() —
+    // Même patron que ChoixServiceCascade::preselectionnerCascadeDepuisService() —
     // retrouve, à partir d'un service_id proposé automatiquement (Module 3),
     // le nœud organization_units ponté et remonte ses ancêtres pour
     // pré-remplir la cascade. Aucun nœud ponté trouvé = cascade vide,
     // l'agent choisit manuellement (aucune donnée fabriquée).
     private function preselectionnerCascadeDepuisService(int $serviceId): void
     {
-        $courant = OrganizationUnit::where('service_id', $serviceId)->first();
+        $selection = OrganizationUnit::selectionCascade(OrganizationUnit::where('service_id', $serviceId)->first());
 
-        while ($courant !== null) {
-            match ($courant->type) {
-                OrganizationUnit::TYPE_SUB_SERVICE, OrganizationUnit::TYPE_SERVICE => $this->uniteSelectionneeId = $courant->id,
-                OrganizationUnit::TYPE_DEPARTMENT => $this->departementSelectionneId = $courant->id,
-                OrganizationUnit::TYPE_DIRECTION => $this->directionSelectionneeId = $courant->id,
-                OrganizationUnit::TYPE_SITE => $this->siteSelectionneId = $courant->id,
-                default => null,
-            };
-
-            $courant = $courant->parent;
-        }
+        $this->siteSelectionneId = $selection['site'];
+        $this->directionSelectionneeId = $selection['direction'];
+        $this->departementSelectionneId = $selection['departement'];
+        $this->uniteSelectionneeId = $selection['unite'];
     }
 
     // Rechargé + réautorisé à chaque requête à partir du seul ID (Règle n°2/n°6).
@@ -589,6 +597,7 @@ class RegistrationForm extends Component
             // liste juste après, puisque brouillonId repasse à 0).
             ->whereNull('finalise_le')
             ->when($this->brouillonId, fn ($q) => $q->whereKeyNot($this->brouillonId))
+            ->when($this->brouillonsSupplementairesIds, fn ($q) => $q->whereKeyNot($this->brouillonsSupplementairesIds))
             ->latest()
             ->paginate(10, ['id', 'nom_original', 'ocr_statut', 'created_at', 'cree_par_id'], 'brouillonsPage');
     }
@@ -642,6 +651,10 @@ class RegistrationForm extends Component
     // JS) — #[Url] synchronise l'URL automatiquement, sans navigation
     // complète, pour que l'aperçu du document/les infos OCR apparaissent
     // immédiatement sur cette même page.
+    //
+    // 2026-10-23 — plusieurs fichiers à la fois (voir $documentsImportes) :
+    // sans document principal, le premier fichier le devient (pré-remplissage) ;
+    // tous les autres rejoignent les documents supplémentaires du courrier.
     public function importerFichier(): void
     {
         $this->authorize('create', Courrier::class);
@@ -651,15 +664,158 @@ class RegistrationForm extends Component
             return;
         }
 
-        $this->validate(['document' => BrouillonScanService::reglesValidation(ScanForm::resolutionMinimale())]);
+        $this->resetErrorBag('documentsImportes');
 
-        $brouillon = app(BrouillonScanService::class)->creer($this->document, CourrierBrouillon::SOURCE_MANUEL);
+        $validateur = Validator::make(
+            ['documents' => $this->documentsImportes],
+            [
+                'documents' => ['required', 'array', 'max:'.max(0, self::MAX_DOCUMENTS_SCANNES - $this->nombreDocumentsScannes())],
+                'documents.*' => BrouillonScanService::reglesValidation(ScanForm::resolutionMinimale()),
+            ],
+            ['documents.max' => __(':n documents au maximum par courrier.', ['n' => self::MAX_DOCUMENTS_SCANNES])],
+            ['documents' => __('fichier'), 'documents.*' => __('fichier')],
+        );
 
-        $this->reset('document');
-        unset($this->brouillonsEnAttente);
+        if ($validateur->fails()) {
+            $this->reset('documentsImportes');
+            $this->addError('documentsImportes', $validateur->errors()->first());
 
+            return;
+        }
+
+        $service = app(BrouillonScanService::class);
+        $principal = null;
+
+        foreach ($this->documentsImportes as $fichier) {
+            $brouillon = $service->creer($fichier, CourrierBrouillon::SOURCE_MANUEL);
+
+            if ($this->brouillonId === 0) {
+                $this->brouillonId = $brouillon->id;
+                $principal = $brouillon;
+            } else {
+                $this->brouillonsSupplementairesIds[] = $brouillon->id;
+            }
+        }
+
+        $this->reset('documentsImportes');
+        unset($this->brouillon, $this->brouillonsEnAttente, $this->brouillonsSupplementaires);
+
+        if ($principal) {
+            $this->preremplirDepuisBrouillon($principal);
+            $this->typeDocumentPersonnalise = $this->form->type_document !== ''
+                && ! in_array($this->form->type_document, CourrierForm::typesDocument(), true);
+        }
+    }
+
+    // Rechargés + réautorisés à chaque requête à partir des seuls IDs (Règle
+    // n°2/n°6), dans l'ordre où l'agent les a choisis. Un brouillon utilisé
+    // entre-temps ailleurs disparaît simplement de la liste.
+    #[Computed]
+    public function brouillonsSupplementaires(): Collection
+    {
+        if ($this->brouillonsSupplementairesIds === []) {
+            return collect();
+        }
+
+        $ordre = array_map('intval', $this->brouillonsSupplementairesIds);
+
+        $brouillons = CourrierBrouillon::whereKey($ordre)
+            ->whereNull('finalise_le')
+            ->get()
+            ->sortBy(fn (CourrierBrouillon $brouillon) => array_search($brouillon->id, $ordre, true))
+            ->values();
+
+        foreach ($brouillons as $brouillon) {
+            $this->authorize('utiliser', $brouillon);
+        }
+
+        return $brouillons;
+    }
+
+    private function nombreDocumentsScannes(): int
+    {
+        return ($this->brouillonId !== 0 ? 1 : 0) + count($this->brouillonsSupplementairesIds);
+    }
+
+    // "Joindre aussi un document scanné" (2026-10-23) : un document déjà en
+    // attente (ex. la facture scannée juste après la lettre) rejoint le
+    // courrier en cours, à côté du document principal.
+    public function joindreBrouillon(int $id): void
+    {
+        $this->authorize('create', Courrier::class);
+
+        if ($this->modeConfidentiel || $this->brouillonId === 0 || $id === $this->brouillonId
+            || in_array($id, array_map('intval', $this->brouillonsSupplementairesIds), true)) {
+            return;
+        }
+
+        $this->resetErrorBag('documentsImportes');
+
+        if ($this->nombreDocumentsScannes() >= self::MAX_DOCUMENTS_SCANNES) {
+            $this->addError('documentsImportes', __(':n documents au maximum par courrier.', ['n' => self::MAX_DOCUMENTS_SCANNES]));
+
+            return;
+        }
+
+        $brouillon = CourrierBrouillon::whereKey($id)->whereNull('finalise_le')->first();
+
+        if ($brouillon === null) {
+            $this->addError('documentsImportes', __('Ce document scanné n\'est plus disponible.'));
+            unset($this->brouillonsEnAttente);
+
+            return;
+        }
+
+        $this->authorize('utiliser', $brouillon);
+
+        $this->brouillonsSupplementairesIds[] = $brouillon->id;
+        unset($this->brouillonsEnAttente, $this->brouillonsSupplementaires);
+    }
+
+    // Retiré de CE courrier seulement : le document reste en attente et
+    // réapparaît dans la liste (même principe qu'annulerDocument()).
+    public function retirerBrouillon(int $id): void
+    {
+        $this->brouillonsSupplementairesIds = array_values(array_filter(
+            $this->brouillonsSupplementairesIds,
+            fn ($autre) => (int) $autre !== $id,
+        ));
+        $this->resetErrorBag('documentsImportes');
+        unset($this->brouillonsEnAttente, $this->brouillonsSupplementaires);
+    }
+
+    // L'ordre de sélection du navigateur ne suit pas toujours l'intention de
+    // l'agent (la facture peut passer avant la lettre) : un document
+    // supplémentaire devient le document principal — celui dont le texte
+    // pré-remplit le formulaire — et l'ancien principal reste joint.
+    public function utiliserCommePrincipal(int $id): void
+    {
+        if (! in_array($id, array_map('intval', $this->brouillonsSupplementairesIds), true)) {
+            return;
+        }
+
+        $brouillon = CourrierBrouillon::whereKey($id)->whereNull('finalise_le')->first();
+
+        if ($brouillon === null) {
+            $this->retirerBrouillon($id);
+
+            return;
+        }
+
+        $this->authorize('utiliser', $brouillon);
+
+        $autres = array_values(array_filter($this->brouillonsSupplementairesIds, fn ($autre) => (int) $autre !== $id));
+
+        if ($this->brouillonId !== 0) {
+            array_unshift($autres, $this->brouillonId);
+        }
+
+        $this->brouillonsSupplementairesIds = $autres;
         $this->brouillonId = $brouillon->id;
-        $this->preremplirDepuisBrouillon($brouillon);
+        unset($this->brouillon, $this->brouillonsEnAttente, $this->brouillonsSupplementaires);
+        $this->resetErrorBag('brouillonId');
+
+        $this->appliquerBrouillon($brouillon);
         $this->typeDocumentPersonnalise = $this->form->type_document !== ''
             && ! in_array($this->form->type_document, CourrierForm::typesDocument(), true);
     }
@@ -669,11 +825,16 @@ class RegistrationForm extends Component
     // finalisé, il reste "en attente" et réapparaît dans la liste déroulante
     // (comportement déjà existant, voir brouillonsEnAttente()) pour être
     // repris plus tard, cohérent avec "Enregistrer et continuer plus tard".
+    // 2026-10-23 — le premier document supplémentaire éventuel prend sa place.
     public function annulerDocument(): void
     {
         $this->reset('document');
         $this->brouillonId = 0;
         unset($this->brouillon, $this->brouillonsEnAttente);
+
+        if ($this->brouillonsSupplementairesIds !== []) {
+            $this->utiliserCommePrincipal((int) $this->brouillonsSupplementairesIds[0]);
+        }
     }
 
     // Règle n°1 (notification de fin de job) sans wire:poll (Règle n°2) : rafraîchit
@@ -742,7 +903,7 @@ class RegistrationForm extends Component
 
         // Bascule tout de suite vers le chemin confidentiel, isolé dans sa
         // propre méthode privée (voir enregistrerConfidentiel() plus bas) —
-        // ni $this->pieceJointe, ni $this->document, ni $this->brouillon ne
+        // ni $this->piecesJointes, ni $this->document, ni $this->brouillon ne
         // sont JAMAIS lus dans cette branche, qui remplace désormais la
         // garantie structurelle que donnait l'absence de WithFileUploads
         // sur l'ancien composant séparé (voir DECISIONS.md).
@@ -753,6 +914,10 @@ class RegistrationForm extends Component
         }
 
         $brouillon = $this->brouillon;
+
+        // Lus (et donc réautorisés) AVANT la création du courrier : un refus
+        // ne laisse jamais un courrier à moitié enregistré.
+        $brouillonsSupplementaires = $this->brouillonsSupplementaires;
 
         // 'non_traite' (job pas encore démarré — file d'attente de la queue,
         // worker arrêté...) ajouté le 2026-09-10 (revue de code) : ce garde-fou
@@ -785,78 +950,29 @@ class RegistrationForm extends Component
 
         $data = $this->form->validate();
         $this->validate([
-            'pieceJointe' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
+            ...$this->reglesPiecesJointes(),
             'commentaire' => ['nullable', 'string', 'max:500'],
             'referenceExterne' => ['nullable', 'string', 'max:255'],
         ]);
         $data['reference_externe'] = $this->referenceExterne;
 
-        // Module 1/4 — demande explicite de l'utilisateur (2026-09-08, précisée
-        // le 2026-09-15 par SRS-GEC.pdf, voir DECISIONS.md) : le service n'est
-        // plus saisi par l'agent pour un courrier ENTRANT — il est ignoré ici
-        // (jamais persisté depuis le formulaire), et reste inconnu jusqu'à ce
-        // que le DGA/ADJ DGA le choisisse (WorkflowService::validerService()).
-        // Exception n°1 : un sinistre confirmé par la réceptionniste (type_document
-        // = "Sinistre", voir CourrierForm::estUnSinistre()) est routé
-        // directement au bon service via la même règle de classement que le
-        // Module 3 (Module 3, "sinistre" → DSIN, donnée de configuration, pas
-        // de code) — il saute la validation DGA, comme aujourd'hui.
-        // Exception n°2 (2026-10-08, retour utilisateur, privilège
-        // courriers.envoyer_direct_service) : un agent qui a ce privilège ET
-        // a lui-même choisi un service via la cascade (voir
-        // registrationForm.blade.php, $peutEnvoyerDirectService — déjà
-        // résolu dans $data['service_id'] par resoudreServiceDepuisCascade(),
-        // CourrierForm::rules() l'acceptait déjà pour un entrant, nullable)
-        // saute AUSSI la validation DGA, même mécanisme que le sinistre.
-        // Règle n°6 — jamais fait confiance à ce que $data contient déjà :
-        // le privilège ET l'appartenance au formulaire sont revérifiés ici,
-        // pas seulement dans la vue qui montre/cache la cascade.
-        // Si NI l'un NI l'autre ne résout de service (ex. sinistre sans
-        // règle configurée, ou agent sans ce privilège, ou privilège présent
-        // mais rien choisi), on retombe sur la validation DGA plutôt que de
-        // laisser un courrier "enregistré" sans service, orphelin (Module 6 :
-        // "un courrier a toujours un responsable identifié"). Uniquement
-        // pour l'entrant : le sortant garde le circuit actuel inchangé,
-        // service toujours requis à la saisie (portée confirmée avec
-        // l'utilisateur, voir DECISIONS.md).
-        //
-        // 'en_attente_de_transfert', pas 'en_attente_validation_dga' : un
-        // courrier entrant non-sinistre attend maintenant que la
-        // réceptionniste clique explicitement "Transférer"
-        // (WorkflowService::transferer()) avant de rejoindre la file du DGA
-        // — le transfert n'est plus automatique à l'enregistrement (voir
-        // DECISIONS.md, synchronisation SRS-GEC.pdf).
+        // Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au
+        // service et acceptation") — un courrier ENTRANT n'a jamais de service
+        // à l'enregistrement : l'accueil le transfère ensuite au service
+        // concerné (fiche, "Mes courriers", "Tous les courriers"), qui
+        // l'accepte ou le refuse — plus de validation DGA. Un service resté
+        // dans le formulaire (proposition pré-remplie) n'est donc jamais
+        // persisté ici. Exception : un sinistre est transféré automatiquement
+        // au service proposé par les règles de classement, une fois le
+        // courrier et ses fichiers enregistrés (voir
+        // transfererSinistreAutomatiquement() plus bas). Le sortant garde son
+        // service, toujours requis à la saisie.
         if ($this->form->sens === 'entrant') {
-            $envoiDirectChoisiParAgent = Auth::user()->hasPrivilege('courriers.envoyer_direct_service')
-                && $data['service_id'] !== null;
-
-            if (! $envoiDirectChoisiParAgent) {
-                $data['service_id'] = null;
-            }
-
-            if ($data['service_id'] === null && $this->form->estUnSinistre()) {
-                $proposition = app(ClassificationService::class)->classer(new Courrier(['objet' => $data['objet']]));
-                $data['service_id'] = $proposition['service_id'];
-            }
-
-            if ($data['service_id'] === null) {
-                $data['statut'] = 'en_attente_de_transfert';
-            }
+            $data['service_id'] = null;
+            $data['statut'] = 'en_attente_de_transfert';
         }
 
-        // 2026-10-12, bug réel (retour utilisateur, "no notification of the
-        // new courrier been transfere to him why") — capturé AVANT la
-        // transaction, sur les MÊMES données qui y seront passées : si le
-        // service a été résolu directement ici (sinistre auto-routé, ou
-        // envoi direct par l'agent — voir les deux branches juste au-dessus),
-        // le courrier saute la validation DGA et donc
-        // WorkflowService::validerService(), seul endroit qui créait jusqu'ici
-        // la trace d'historique ET la notification au responsable du
-        // service. Même événement métier, déclencheur différent : les deux
-        // sont rattrapés juste après la création ci-dessous.
-        $serviceResoluSansDga = $this->form->sens === 'entrant' && $data['service_id'] !== null;
-
-        $courrier = DB::transaction(function () use ($data, $generateur, $serviceResoluSansDga) {
+        $courrier = DB::transaction(function () use ($data, $generateur) {
             $courrier = Courrier::create([
                 ...$data,
                 'numero_reference' => $generateur->generer(),
@@ -870,23 +986,8 @@ class RegistrationForm extends Component
                 'commentaire' => $this->commentaire ?: null,
             ]);
 
-            if ($serviceResoluSansDga) {
-                CourrierHistorique::create([
-                    'courrier_id' => $courrier->id,
-                    'auteur_id' => Auth::id(),
-                    'action' => 'service_valide_dga',
-                    'commentaire' => $this->form->estUnSinistre()
-                        ? 'Service déterminé automatiquement (sinistre, sans validation DGA).'
-                        : 'Service choisi directement par l\'agent (sans validation DGA).',
-                ]);
-            }
-
             return $courrier;
         });
-
-        if ($serviceResoluSansDga) {
-            app(WorkflowService::class)->notifierArriveeDansService($courrier, Auth::user());
-        }
 
         // Module 3 — "à l'enregistrement, le système propose un classement" : en
         // Job (Règle n°1), sur objet/expéditeur ; relancé après l'OCR sur le texte.
@@ -894,14 +995,22 @@ class RegistrationForm extends Component
 
         $avertissement = $brouillon ? $this->finaliserBrouillon($courrier, $brouillon) : null;
 
-        if ($this->pieceJointe) {
-            try {
-                $pieceJointeService->attacher($courrier, $this->pieceJointe, Auth::id());
-            } catch (Throwable $e) {
-                report($e);
-                $avertissement ??= __('Courrier enregistré, mais la pièce jointe n\'a pas pu être stockée (stockage indisponible).');
-            }
+        // Plusieurs pièces jointes possibles (2026-10-23) — un fichier qui ne
+        // peut pas être stocké n'annule ni le courrier ni les autres. Les
+        // documents scannés supplémentaires de l'étape 1 s'y ajoutent.
+        $echecs = $this->attacherPiecesJointes($courrier, $pieceJointeService)
+            + $this->attacherBrouillonsSupplementaires($courrier, $brouillonsSupplementaires, $pieceJointeService);
+
+        if ($echecs > 0) {
+            $avertissement ??= __('Courrier enregistré, mais :n pièce(s) jointe(s) n\'ont pas pu être stockée(s) (stockage indisponible).', ['n' => $echecs]);
         }
+
+        // Sinistre : transféré automatiquement APRÈS le rattachement des
+        // fichiers, qui restent sous "_en_attente" jusqu'à l'acceptation du
+        // service (voir WorkflowService::accepterTransfert()).
+        $serviceSinistre = $this->form->sens === 'entrant' && $this->form->estUnSinistre()
+            ? $this->transfererSinistreAutomatiquement($courrier)
+            : null;
 
         $this->derniereReference = $courrier->numero_reference;
         $this->derniereCourrierId = $courrier->id;
@@ -914,13 +1023,15 @@ class RegistrationForm extends Component
         // précédent brouillon restaient affichés sous des valeurs ensuite
         // saisies à la main pour le courrier suivant — bug réel constaté
         // lors de la revue du 2026-09-04, voir DECISIONS.md.
-        $this->reset('pieceJointe', 'commentaire', 'champsProposesAutomatiquement', 'modeReceptionProposeAutomatiquement', 'typeDocumentPersonnalise', 'referenceExterne');
+        $this->reset('piecesJointes', 'nouvellesPiecesJointes', 'documentsImportes', 'brouillonsSupplementairesIds', 'commentaire', 'champsProposesAutomatiquement', 'modeReceptionProposeAutomatiquement', 'typeDocumentPersonnalise', 'referenceExterne');
         $this->brouillonId = 0;
-        unset($this->brouillon, $this->brouillonsEnAttente);
+        unset($this->brouillon, $this->brouillonsEnAttente, $this->brouillonsSupplementaires);
 
         Flux::toast(
             variant: $avertissement ? 'warning' : 'success',
-            text: $avertissement ?? __('Courrier enregistré sous la référence :ref.', ['ref' => $courrier->numero_reference]),
+            text: $avertissement ?? ($serviceSinistre
+                ? __('Courrier enregistré sous la référence :ref et transféré au service :service — en attente de son acceptation.', ['ref' => $courrier->numero_reference, 'service' => $serviceSinistre->nom])
+                : __('Courrier enregistré sous la référence :ref.', ['ref' => $courrier->numero_reference])),
         );
 
         // Maquette utilisateur du 2026-09-17 (vue en 5 étapes) : le
@@ -930,6 +1041,53 @@ class RegistrationForm extends Component
         // "Confirmation", plutôt qu'un x-effect fragile dépendant du texte
         // interpolé côté serveur.
         $this->dispatch('courrier-enregistre');
+    }
+
+    // Documents scannés supplémentaires (2026-10-23) → pièces jointes du
+    // courrier (voir PieceJointeService::attacherDepuisBrouillon()). Même
+    // tolérance que attacherPiecesJointes() : un document qui ne peut pas
+    // être copié redevient "en attente", sans annuler le courrier ni les
+    // autres. Retourne le nombre d'échecs.
+    private function attacherBrouillonsSupplementaires(Courrier $courrier, Collection $brouillons, PieceJointeService $service): int
+    {
+        $echecs = 0;
+
+        foreach ($brouillons as $brouillon) {
+            try {
+                $service->attacherDepuisBrouillon($courrier, $brouillon, (int) Auth::id());
+            } catch (Throwable $e) {
+                report($e);
+                $echecs++;
+            }
+        }
+
+        return $echecs;
+    }
+
+    // Sinistre (2026-10-23) — même règle de classement que le Module 3
+    // ("sinistre" → service des sinistres : donnée de configuration, pas du
+    // code). Aucun service proposé, ou un service inactif ou sans
+    // responsable : le courrier reste "à transférer" et l'accueil le
+    // transfère à la main — jamais vers un service qui ne pourrait pas
+    // l'accepter.
+    private function transfererSinistreAutomatiquement(Courrier $courrier): ?Service
+    {
+        $proposition = app(ClassificationService::class)->classer($courrier->fresh());
+        $service = $proposition['service_id'] ? Service::find($proposition['service_id']) : null;
+
+        if ($service === null || ! $service->actif || $service->responsable_id === null) {
+            return null;
+        }
+
+        try {
+            app(WorkflowService::class)->transfererAuService($courrier->fresh(), $service, Auth::user());
+        } catch (RuntimeException $e) {
+            report($e);
+
+            return null;
+        }
+
+        return $service;
     }
 
     // "Enregistrer un autre courrier" (étape 5 de la maquette) : la
@@ -949,7 +1107,7 @@ class RegistrationForm extends Component
     // depuis des valeurs qu'elle valide elle-même ici (jamais
     // $this->form->validate() : CourrierForm::rules() exigerait
     // objet/type_document/mode_reception, qui n'existent pas dans ce mode),
-    // et ne touche JAMAIS pieceJointe/document/brouillon — c'est ce qui
+    // et ne touche JAMAIS piecesJointes/document/brouillon — c'est ce qui
     // remplace la garantie structurelle "jamais scanné" de l'ancien
     // composant séparé.
     private function enregistrerConfidentiel(NumeroReferenceGenerator $generateur): void
@@ -1082,9 +1240,9 @@ class RegistrationForm extends Component
 
         $extension = pathinfo($verrouille->fichier_path, PATHINFO_EXTENSION) ?: 'pdf';
         // segmentClassement() replie sur "_en_attente" tant qu'un courrier
-        // entrant n'a pas encore de service (voir DECISIONS.md, synchronisation
-        // SRS-GEC.pdf) — le fichier est déplacé vers le bon dossier service par
-        // WorkflowService::validerService() une fois le DGA passé.
+        // entrant n'a pas encore de service — le fichier est déplacé vers le
+        // bon dossier service par WorkflowService::accepterTransfert(), quand
+        // le service accepte le courrier (2026-10-23).
         $cheminFinal = sprintf(
             'courriers/%d/%s/%s.%s',
             now()->year,
@@ -1118,6 +1276,7 @@ class RegistrationForm extends Component
 
             $courrier->update([
                 'fichier_path' => $cheminFinal,
+                'brouillon_origine_id' => $verrouille->id,
                 'texte_ocr' => $verrouille->texte_ocr,
                 'ocr_statut' => $verrouille->ocr_statut,
                 'ocr_confiance' => $verrouille->ocr_confiance,

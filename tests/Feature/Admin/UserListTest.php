@@ -46,6 +46,19 @@ class UserListTest extends TestCase
         ]);
     }
 
+    // 2026-10-26 — tout utilisateur appartient à une entité (voir
+    // UserList::ajouter()/enregistrerEdition()) : rattache $user à un
+    // département ponté, comme le ferait la cascade.
+    private function rattacherAUneEntite(User $user): OrganizationUnit
+    {
+        $service = Service::factory()->create();
+        $departement = $this->departementPonte($service);
+        $user->update(['service_id' => $service->id]);
+        $user->organizationUnits()->attach($departement->id, ['is_primary' => true]);
+
+        return $departement;
+    }
+
     public function test_un_agent_sans_privilege_ne_peut_pas_gerer_les_utilisateurs(): void
     {
         $this->actingAs($this->utilisateurAvecProfil('Agent'));
@@ -293,7 +306,10 @@ class UserListTest extends TestCase
             ->assertHasErrors(['ajoutNom', 'ajoutPrenom', 'ajoutEmail', 'ajoutProfilId']);
     }
 
-    public function test_ajouter_un_utilisateur_sans_service_fonctionne_pour_une_receptionniste(): void
+    // 2026-10-26 (« chaque user doit être dans une direction, département,
+    // service ») — remplace l'ancienne règle « une réceptionniste sans
+    // service » : sans entité, le compte n'est pas créé.
+    public function test_ajouter_un_utilisateur_sans_entite_est_refuse(): void
     {
         Notification::fake();
         $admin = $this->utilisateurAvecProfil('Administrateur');
@@ -308,11 +324,35 @@ class UserListTest extends TestCase
             ->set('ajoutProfilId', $profil->id)
             ->set('ajoutNiveauConfidentialite', 1)
             ->call('ajouter')
+            ->assertHasErrors('ajoutEntite');
+
+        $this->assertNull(User::where('email', 'accueil@example.com')->first());
+    }
+
+    // La Direction Générale (le Site) est une entité valide : le DG et ses
+    // collaborateurs directs y sont rattachés.
+    public function test_ajouter_un_utilisateur_a_la_direction_generale(): void
+    {
+        Notification::fake();
+        $admin = $this->utilisateurAvecProfil('Administrateur');
+        $service = Service::factory()->create();
+        $site = OrganizationUnit::factory()->create(['type' => OrganizationUnit::TYPE_SITE, 'parent_id' => null, 'service_id' => $service->id]);
+        $this->actingAs($admin);
+
+        Livewire::test(UserList::class)
+            ->call('ouvrirAjout')
+            ->set('ajoutNom', 'Assistante')
+            ->set('ajoutPrenom', 'DG')
+            ->set('ajoutEmail', 'assistante.dg@example.com')
+            ->set('ajoutProfilId', Profil::firstOrCreate(['nom' => 'Collaborateur'])->id)
+            ->set('ajoutNiveauConfidentialite', 1)
+            ->set('ajoutSiteSelectionneId', $site->id)
+            ->call('ajouter')
             ->assertHasNoErrors();
 
-        $cree = User::where('email', 'accueil@example.com')->first();
-        $this->assertNotNull($cree);
-        $this->assertNull($cree->service_id);
+        $cree = User::where('email', 'assistante.dg@example.com')->firstOrFail();
+        $this->assertSame($service->id, $cree->service_id);
+        $this->assertTrue($cree->organizationUnits()->where('organization_units.id', $site->id)->wherePivot('is_primary', true)->exists());
     }
 
     public function test_ajouter_un_utilisateur_avec_une_photo_la_stocke_sur_s3(): void
@@ -382,6 +422,7 @@ class UserListTest extends TestCase
         Notification::fake();
         $admin = $this->utilisateurAvecProfil('Administrateur');
         $agent = $this->utilisateurAvecProfil('Agent', ['niveau_confidentialite' => 1]);
+        $this->rattacherAUneEntite($agent);
         $this->actingAs($admin);
 
         Livewire::test(UserList::class)
@@ -400,6 +441,7 @@ class UserListTest extends TestCase
         Notification::fake();
         $admin = $this->utilisateurAvecProfil('Administrateur');
         $agent = $this->utilisateurAvecProfil('Agent');
+        $this->rattacherAUneEntite($agent);
         $this->actingAs($admin);
 
         Livewire::test(UserList::class)
@@ -458,11 +500,10 @@ class UserListTest extends TestCase
         $this->assertTrue($apres->organizationUnits()->where('organization_units.id', $departementInitial->id)->wherePivot('is_primary', true)->exists());
     }
 
-    public function test_modifier_un_utilisateur_pour_retirer_son_service_fonctionne(): void
+    public function test_retirer_lentite_dun_utilisateur_est_refuse(): void
     {
-        // Même raison que la création (2026-09-22, demande explicite de
-        // l'utilisateur) : une réceptionniste existante peut être repassée
-        // sans service (accueil), pas seulement à la création.
+        // 2026-10-26 — même règle que la création : un compte ne peut plus
+        // être laissé sans entité (remplace la règle du 2026-09-22).
         $admin = $this->utilisateurAvecProfil('Administrateur');
         $serviceInitial = Service::factory()->create();
         $departementInitial = $this->departementPonte($serviceInitial);
@@ -479,13 +520,11 @@ class UserListTest extends TestCase
         $composant
             ->set('editionDepartementSelectionneId', null)
             ->call('enregistrerEdition')
-            ->assertHasNoErrors();
+            ->assertHasErrors('editionEntite');
 
         $apres = $agent->fresh();
-        $this->assertNull($apres->service_id);
-        // 2026-10-09 — cascade explicitement vidée : le rattachement
-        // organization_unit_user périmé est retiré, pas laissé derrière.
-        $this->assertFalse($apres->organizationUnits()->where('organization_units.id', $departementInitial->id)->exists());
+        $this->assertSame($serviceInitial->id, $apres->service_id);
+        $this->assertTrue($apres->organizationUnits()->where('organization_units.id', $departementInitial->id)->exists());
     }
 
     // "Nom"/"Prénom" de la maquette restent deux CHAMPS distincts à
@@ -495,7 +534,8 @@ class UserListTest extends TestCase
     public function test_nom_et_prenom_sont_scindes_a_laffichage_et_recombines_sans_perte(): void
     {
         $admin = $this->utilisateurAvecProfil('Administrateur');
-        $agent = $this->utilisateurAvecProfil('Agent', ['name' => 'Jean Paul Kamga', 'service_id' => Service::factory()->create()->id]);
+        $agent = $this->utilisateurAvecProfil('Agent', ['name' => 'Jean Paul Kamga']);
+        $this->rattacherAUneEntite($agent);
         $this->actingAs($admin);
 
         $component = Livewire::test(UserList::class)->call('ouvrirEdition', $agent->id);
@@ -582,14 +622,14 @@ class UserListTest extends TestCase
         $agent = $this->utilisateurAvecProfil('Agent');
         $this->actingAs($admin);
 
-        $privilege = Privilege::where('cle', 'courriers.voir_dga')->firstOrFail();
+        $privilege = Privilege::where('cle', 'courriers.voir_transferes')->firstOrFail();
         $privilege->users()->attach($agent->id);
 
         Livewire::test(UserList::class)
             ->call('ouvrirPermissions', $agent->id)
             ->call('basculerPermission', $privilege->id);
 
-        $this->assertFalse(User::find($agent->id)->hasPrivilege('courriers.voir_dga'));
+        $this->assertFalse(User::find($agent->id)->hasPrivilege('courriers.voir_transferes'));
     }
 
     // Modules réels dérivés de `cle` (voir Privilege::MODULES) — pas les
@@ -614,11 +654,11 @@ class UserListTest extends TestCase
         $component = Livewire::test(UserList::class)
             ->call('ouvrirPermissions', $this->utilisateurAvecProfil('Agent')->id)
             ->set('modulePermissionSelectionne', 'courriers')
-            ->set('recherchePermission', 'DGA');
+            ->set('recherchePermission', 'Accepter ou refuser');
 
         $noms = $component->get('permissionsDuModule')->pluck('nom');
 
-        $this->assertTrue($noms->contains('Voir les courriers en attente de validation DGA'));
+        $this->assertTrue($noms->contains('Accepter ou refuser un courrier transféré'));
         $this->assertFalse($noms->contains('Créer un courrier'));
     }
 
@@ -667,7 +707,7 @@ class UserListTest extends TestCase
     {
         $admin = $this->utilisateurAvecProfil('Administrateur');
         $agent = $this->utilisateurAvecProfil('Agent');
-        $dga = $this->utilisateurAvecProfil('DGA');
+        $dga = $this->utilisateurAvecProfil('DG');
         $this->actingAs($admin);
 
         $component = Livewire::test(UserList::class)->call('ouvrirEdition', $agent->id);
@@ -683,7 +723,7 @@ class UserListTest extends TestCase
     {
         $admin = $this->utilisateurAvecProfil('Administrateur');
         $agent = $this->utilisateurAvecProfil('Agent');
-        $dga = $this->utilisateurAvecProfil('DGA');
+        $dga = $this->utilisateurAvecProfil('DG');
         $responsable = $this->utilisateurAvecProfil('Responsable de service');
         $this->actingAs($admin);
 
@@ -832,23 +872,34 @@ class UserListTest extends TestCase
         $this->assertSame($service->id, $collaborateur->fresh()->service_id);
     }
 
-    public function test_modifier_le_telephone_conserve_un_service_hors_organigramme(): void
+    // 2026-10-26 — un compte relié à un service absent de l'organigramme
+    // (agent "AC") n'a pas d'entité : son service n'est jamais effacé en
+    // silence (bug réel du 2026-09-24), mais l'admin doit lui choisir une
+    // entité avant d'enregistrer.
+    public function test_un_compte_hors_organigramme_doit_recevoir_une_entite(): void
     {
-        // Bug réel (2026-09-24) : un service pas encore dans l'organigramme
-        // (agent "AC", DGA "SDG") était effacé au premier enregistrement.
         $admin = $this->utilisateurAvecProfil('Administrateur');
         $serviceHorsOrganigramme = Service::factory()->create(['nom' => 'Accueil', 'code' => 'AC']);
         $agent = $this->utilisateurAvecProfil('Agent', ['service_id' => $serviceHorsOrganigramme->id]);
+        $nouveauService = Service::factory()->create();
+        $departement = $this->departementPonte($nouveauService);
         $this->actingAs($admin);
 
-        Livewire::test(UserList::class)
+        $composant = Livewire::test(UserList::class)
             ->call('ouvrirEdition', $agent->id)
             ->assertSee('Service actuel : Accueil (AC)')
             ->set('editionTelephone', '+225 01 02 03 04')
             ->call('enregistrerEdition')
-            ->assertHasNoErrors();
+            ->assertHasErrors('editionEntite');
 
         $this->assertSame($serviceHorsOrganigramme->id, $agent->fresh()->service_id);
+
+        $composant
+            ->set('editionDepartementSelectionneId', $departement->id)
+            ->call('enregistrerEdition')
+            ->assertHasNoErrors();
+
+        $this->assertSame($nouveauService->id, $agent->fresh()->service_id);
     }
 
     public function test_le_parametre_modifier_ne_contourne_pas_les_droits_sur_le_compte(): void

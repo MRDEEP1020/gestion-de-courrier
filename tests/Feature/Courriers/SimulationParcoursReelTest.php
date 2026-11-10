@@ -40,11 +40,14 @@ use Tests\TestCase;
 // (phpunit.xml) — jamais la vraie base `gec`.
 //
 //   Courrier A — lettre normale scannée : scan → enregistrement → transfert
-//                DGA → validation service (DI) → affectation → traitement →
-//                renvoi pour correction → validation → archivage.
-//   Courrier B — déclaration de sinistre : routée directement à DSIN (saute
-//                la DGA) → affectation → mise en attente d'information →
-//                reprise → validation → archivage.
+//                au service DI → acceptation par le responsable DI (décharge)
+//                → original remis → affectation → traitement → renvoi pour
+//                correction → validation → archivage.
+//   Courrier B — déclaration de sinistre : transférée automatiquement à DSIN
+//                → acceptation → affectation → mise en attente d'information
+//                → reprise → validation → archivage.
+//   (2026-10-23 — plus de DGA dans le circuit d'entrée, voir DECISIONS.md
+//   "Transfert direct au service et acceptation".)
 //   Courrier C — courrier confidentiel jamais ouvert : envoyé directement à
 //                la DGA, niveau 3 → la DGA le marque comme remis → archivage.
 //
@@ -121,8 +124,11 @@ class SimulationParcoursReelTest extends TestCase
         $this->assertTrue($this->comptes['agent']->destinatairesTransfert()->whereKey($this->comptes['dga']->id)->exists());
         $this->ok('Utilisateurs : la DGA ajoutée aux destinataires de transfert de l\'agent (/admin/utilisateurs).');
 
+        // 2026-10-26 — tout compte a une entité : le DG est rattaché au Site
+        // (Direction Générale) à sa première modification.
         Livewire::test(UserList::class)
             ->call('ouvrirEdition', $this->comptes['dga']->id)
+            ->set('editionSiteSelectionneId', $site->id)
             ->set('editionNiveauConfidentialite', 3)
             ->call('enregistrerEdition')
             ->assertHasNoErrors();
@@ -162,7 +168,7 @@ class SimulationParcoursReelTest extends TestCase
         $this->comptes = array_map(fn (User $u) => $u->fresh(), $this->comptes);
 
         // ============ Courrier A — lettre normale, scannée ============
-        $this->section('Courrier A — lettre normale scannée (circuit complet avec DGA)');
+        $this->section('Courrier A — lettre normale scannée (transfert au service, acceptation)');
         $agent = $this->comptes['agent'];
         $this->actingAs($agent);
 
@@ -211,43 +217,59 @@ class SimulationParcoursReelTest extends TestCase
         Livewire::test(MesCourriers::class)->assertSee($courrierA->numero_reference);
         $this->ok('Agent : le courrier apparaît dans « Mes courriers ».');
 
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrierA->id])
-            ->set('destinataireTransfertChoisi', $this->comptes['dga']->id)
-            ->call('transferer')
-            ->assertHasNoErrors();
-        $this->assertSame('en_cours_de_transfert', $courrierA->fresh()->statut);
-        $this->ok('Agent : « Transférer » à la DGA → « en cours de transfert ».');
-
-        $this->matricePages('Courrier A en attente de la DGA', $courrierA);
-
-        $dga = $this->comptes['dga'];
-        $this->actingAs($dga);
-        $this->listeEnCours()->assertSee($courrierA->numero_reference);
-        $validation = Livewire::test(ShowCourrier::class, ['courrierId' => $courrierA->id]);
+        $transfert = Livewire::test(ShowCourrier::class, ['courrierId' => $courrierA->id]);
         $this->verifier(
-            $validation->get('departementSelectionneId') === $departementDi->id,
-            'DGA : la cascade Site/Département est pré-remplie sur « Direction Informatique ».',
-            'DGA : la cascade n\'est pas pré-remplie sur la proposition (départ. = '.var_export($validation->get('departementSelectionneId'), true).').'
+            $transfert->get('departementSelectionneId') === $departementDi->id,
+            'Agent : la cascade Site/Département est pré-remplie sur « Direction Informatique » (proposition de classement).',
+            'Agent : la cascade n\'est pas pré-remplie sur la proposition (départ. = '.var_export($transfert->get('departementSelectionneId'), true).').'
         );
-        $validation
+        $transfert
             ->set('siteSelectionneId', $site->id)
             ->set('departementSelectionneId', $departementDi->id)
-            ->call('validerService')
+            ->call('transferer')
+            ->assertHasNoErrors();
+        $courrierA->refresh();
+        $this->assertSame('en_cours_de_transfert', $courrierA->statut);
+        $this->assertSame($di->id, $courrierA->service_id);
+        $this->ok('Agent : « Transférer au service » DI → « en attente d\'acceptation ».');
+
+        $this->matricePages('Courrier A en attente d\'acceptation par DI', $courrierA);
+
+        $responsableDi = $this->comptes['responsable_di'];
+        $this->actingAs($responsableDi);
+        $this->verifier(
+            $this->get(route('apercus.manifeste', ['courrier', $courrierA->id]))->getStatusCode() === 403,
+            'Responsable DI : le document reste masqué (403) avant l\'acceptation.',
+            'Responsable DI : peut ouvrir le document avant de l\'avoir accepté (devrait être masqué).'
+        );
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrierA->id])
+            ->call('accepterTransfert')
             ->assertHasNoErrors();
         $courrierA->refresh();
         $this->assertSame('enregistre', $courrierA->statut);
-        $this->assertSame($di->id, $courrierA->service_id);
-        $this->ok('DGA : service DI confirmé → « enregistré », visible par le responsable DI.');
+        $this->ok("Responsable DI : courrier accepté → décharge {$courrierA->dernierTransfert->numero_decharge}, « accepté — à affecter ».");
         $this->verifier(
             ! str_contains((string) $courrierA->fichier_path, '_en_attente'),
             "Le PDF a été déplacé dans le dossier du service ({$courrierA->fichier_path}).",
             "Le PDF est resté sous le dossier provisoire ({$courrierA->fichier_path})."
         );
 
-        $responsableDi = $this->comptes['responsable_di'];
+        $this->actingAs($agent);
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrierA->id])
+            ->call('marquerOriginalRemis')
+            ->assertHasNoErrors();
+        $this->assertNotNull($courrierA->dernierTransfert()->first()->original_remis_le);
+        $this->ok('Agent : original papier remis au service DI, marqué dans la fiche.');
+
         $collaborateurDi = $this->comptes['collaborateur_di'];
         $this->actingAs($responsableDi);
         $this->listeEnCours()->assertSee($courrierA->numero_reference);
+        // 2026-10-29 — ordre remise → signature → affectation.
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrierA->id])
+            ->assertSet('peutAffecterPremiere', false)
+            ->call('signerReceptionOriginal')
+            ->assertHasNoErrors();
+        $this->ok('Responsable DI : réception de l\'original signée dans GEC (décharge complète).');
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrierA->id])
             ->assertSet('collaborateurSelectionne', $collaborateurDi->id)
             ->call('affecter')
@@ -306,7 +328,7 @@ class SimulationParcoursReelTest extends TestCase
         $this->ok('Responsable DI et agent créateur voient toujours le courrier rangé dans le dossier personnel du collaborateur.');
 
         // ============ Courrier B — sinistre ============
-        $this->section('Courrier B — déclaration de sinistre (routage direct DSIN)');
+        $this->section('Courrier B — déclaration de sinistre (transfert automatique à DSIN)');
         $this->actingAs($agent);
         Livewire::test(RegistrationForm::class)
             ->set('form.sens', 'entrant')
@@ -321,9 +343,9 @@ class SimulationParcoursReelTest extends TestCase
             ->call('enregistrer')
             ->assertHasNoErrors();
         $courrierB = Courrier::where('objet', 'like', 'Déclaration de sinistre automobile%')->firstOrFail();
-        $this->assertSame('enregistre', $courrierB->statut);
+        $this->assertSame('en_cours_de_transfert', $courrierB->statut);
         $this->assertSame($dsin->id, $courrierB->service_id);
-        $this->ok("Agent : sinistre enregistré ({$courrierB->numero_reference}) → directement « enregistré » chez DSIN, sans DGA.");
+        $this->ok("Agent : sinistre enregistré ({$courrierB->numero_reference}) → transféré automatiquement à DSIN, en attente d'acceptation.");
 
         $this->actingAs($this->comptes['collaborateur_di']);
         $this->verifier(
@@ -336,6 +358,16 @@ class SimulationParcoursReelTest extends TestCase
         $collaborateurDsin = $this->comptes['collaborateur_dsin'];
         $this->actingAs($responsableDsin);
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrierB->id])
+            ->call('accepterTransfert')->assertHasNoErrors();
+        $this->assertSame('enregistre', $courrierB->fresh()->statut);
+        // 2026-10-29 — ordre remise → signature → affectation.
+        $this->actingAs($agent);
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrierB->id])
+            ->call('marquerOriginalRemis')->assertHasNoErrors();
+        $this->actingAs($responsableDsin);
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrierB->id])
+            ->call('signerReceptionOriginal')->assertHasNoErrors();
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrierB->id])
             ->assertSet('collaborateurSelectionne', $collaborateurDsin->id)
             ->call('affecter')->assertHasNoErrors();
 
@@ -345,7 +377,7 @@ class SimulationParcoursReelTest extends TestCase
             ->set('motifAttente', 'Constat amiable manquant — demandé à l\'assuré.')
             ->call('mettreEnAttente')->assertHasNoErrors();
         $this->assertSame('en_attente_information', $courrierB->fresh()->statut);
-        $this->ok('Responsable DSIN affecte ; collaborateur DSIN démarre puis met en attente (pièce manquante).');
+        $this->ok('Responsable DSIN accepte puis affecte ; collaborateur DSIN démarre puis met en attente (pièce manquante).');
 
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrierB->id])
             ->call('reprendre')->assertHasNoErrors()
@@ -366,6 +398,7 @@ class SimulationParcoursReelTest extends TestCase
         // nomEnveloppe/niveauConfidentialite, destinataireChoix (format
         // "user-<id>") remplace destinataireSystemeId.
         $this->section('Courrier C — courrier confidentiel (jamais ouvert, niveau 3)');
+        $dga = $this->comptes['dga'];
         $this->actingAs($agent);
         Livewire::test(RegistrationForm::class)
             ->call('basculerModeConfidentiel', true)
@@ -477,7 +510,7 @@ class SimulationParcoursReelTest extends TestCase
             "Fiche {$courrier->numero_reference}" => route('courriers.show', $courrier->id),
             'Modifier la fiche' => route('courriers.modifier', $courrier->id),
             'Bordereau' => route('courriers.bordereau', $courrier->id),
-            'Document PDF' => route('courriers.document', $courrier->id),
+            // 2026-11-09 — plus de route « Document PDF » (aperçu sécurisé seulement).
         ];
 
         $lignes = ["\n### Pages visitées — {$moment}\n", '| Page | '.implode(' | ', array_keys($this->comptes)).' |', '|---|'.str_repeat('---|', count($this->comptes))];

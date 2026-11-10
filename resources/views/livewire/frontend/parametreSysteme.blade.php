@@ -37,11 +37,13 @@
                     @foreach ([
                         ['cle' => 'numero', 'label' => __('Numéro de référence'), 'icon' => 'hashtag'],
                         ['cle' => 'sla', 'label' => __('SLA — Délais'), 'icon' => 'clock'],
+                        ['cle' => 'notifications', 'label' => __('Préférences de notification'), 'icon' => 'bell'],
                         ['cle' => 'sla_type', 'label' => __('SLA — Par type de document'), 'icon' => 'queue-list'],
                         ['cle' => 'qualite', 'label' => __('Confidentialité & qualité scan/OCR'), 'icon' => 'shield-check'],
                         ['cle' => 'liste_type_document', 'label' => __('Types de document'), 'icon' => 'document-text'],
                         ['cle' => 'liste_mode_reception', 'label' => __('Modes de réception'), 'icon' => 'inbox-arrow-down'],
                         ['cle' => 'liste_priorite', 'label' => __('Priorités'), 'icon' => 'flag'],
+                        ['cle' => 'decharge', 'label' => __('Modèle de décharge'), 'icon' => 'document-check'],
                     ] as $categorie)
                         <button
                             type="button"
@@ -143,6 +145,45 @@
                         :description="__('Laisser vide pour désactiver. Notifie en plus le niveau hiérarchique supérieur (Organisation).')"
                     />
                 </div>
+            </div>
+
+            {{-- ----- Préférences de notification — valeurs par défaut ----- --}}
+            <div x-show="section === 'notifications'" x-cloak class="rounded-2xl border border-brand-border bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                <div class="mb-1 flex items-center gap-2">
+                    <flux:icon.bell class="size-4 text-brand-accent" />
+                    <flux:heading level="2" class="text-base">{{ __('Préférences de notification') }}</flux:heading>
+                </div>
+                <flux:text class="mb-4 text-zinc-500">{{ __('Valeurs appliquées par défaut aux utilisateurs. Chacun peut les remplacer dans ses paramètres personnels. La fréquence de relance SLA par défaut est réglée dans la section « SLA — Délais ».') }}</flux:text>
+
+                {{-- 2026-11-10 — colonnes « E-mail » / « Application » avec un en-tête,
+                     comme la page Paramètres › Notifications (le libellé à côté de
+                     chaque interrupteur ne disait pas lequel il commandait). --}}
+                <div class="overflow-hidden rounded-xl border border-brand-border dark:border-zinc-700">
+                    <div class="hidden grid-cols-[minmax(0,1fr)_7rem_7rem] items-center gap-4 border-b border-brand-border bg-zinc-50 px-4 py-2.5 text-sm font-medium text-zinc-900 sm:grid dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-white">
+                        <span>{{ __('Activité') }}</span>
+                        <span class="flex items-center justify-center gap-1.5"><flux:icon.envelope class="size-4" />{{ __('E-mail') }}</span>
+                        <span class="flex items-center justify-center gap-1.5"><flux:icon.bell class="size-4" />{{ __('Application') }}</span>
+                    </div>
+                    <div class="divide-y divide-brand-border dark:divide-zinc-700">
+                        @foreach (\App\Services\NotificationPreferenceService::CATEGORIES as $categorie => $details)
+                            <div wire:key="notification-defaut-{{ $categorie }}" class="grid gap-3 px-4 py-3.5 sm:grid-cols-[minmax(0,1fr)_7rem_7rem] sm:items-center sm:gap-4">
+                                <div class="min-w-0">
+                                    <flux:text class="font-medium text-zinc-900 dark:text-white">{{ __($details['label']) }}</flux:text>
+                                    <flux:text class="mt-0.5 text-sm">{{ __($details['description']) }}</flux:text>
+                                </div>
+                                @foreach (\App\Services\NotificationPreferenceService::CANAUX as $canal)
+                                    <div class="flex items-center justify-between gap-3 rounded-lg bg-zinc-50 px-3 py-2 sm:justify-center sm:bg-transparent sm:p-0 dark:bg-zinc-800/60 sm:dark:bg-transparent">
+                                        <span class="flex items-center gap-1.5 text-sm sm:hidden" aria-hidden="true">
+                                            <flux:icon :icon="$canal === 'email' ? 'envelope' : 'bell'" class="size-4" />{{ $canal === 'email' ? __('E-mail') : __('Application') }}
+                                        </span>
+                                        <flux:switch wire:model="notificationsDefaut.{{ $categorie }}.{{ $canal }}" aria-label="{{ $canal === 'email' ? __('E-mail') : __('Application') }} — {{ __($details['label']) }}" />
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endforeach
+                    </div>
+                </div>
+                <flux:text class="mt-3 text-sm">{{ __('« Application » regroupe la cloche et les alertes qui s\'affichent en direct. Un utilisateur qui a personnalisé un réglage garde son choix.') }}</flux:text>
             </div>
 
             {{-- ----- SLA — délais par type de document ----- --}}
@@ -288,6 +329,109 @@
                     </div>
                 </div>
             @endforeach
+
+            {{-- ----- Modèle de décharge (2026-10-28, « je veux qu'elle soit
+                 modifiable à partir de l'interface ») — textes de la décharge
+                 de remise de l'original (pdf/decharge-remise), enregistrés
+                 avec les autres réglages. ----- --}}
+            <div x-show="section === 'decharge'" x-cloak class="rounded-2xl border border-brand-border bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                <div class="mb-1 flex items-center gap-2">
+                    <flux:icon.document-check class="size-4 text-brand-accent" />
+                    <flux:heading level="2" class="text-base">{{ __('Modèle de décharge') }}</flux:heading>
+                </div>
+                <flux:text class="mb-4 text-zinc-500">{{ __('Textes imprimés sur la décharge de remise de l\'original au service. Les repères entre accolades sont remplacés à l\'impression ; un champ facultatif laissé vide retire sa partie du document.') }}</flux:text>
+
+                {{-- Format du numéro (2026-10-28, « le numéro de référence de la
+                     décharge doit être modifiable ») — même présentation que
+                     la catégorie « Numéro de référence ». --}}
+                <div class="mb-5 rounded-xl border border-brand-border p-4 dark:border-zinc-700">
+                    <div class="mb-3 flex items-center gap-2">
+                        <flux:icon.hashtag class="size-4 text-brand-accent" />
+                        <flux:heading level="3" class="text-sm">{{ __('Numéro de la décharge') }}</flux:heading>
+                    </div>
+                    <div class="grid gap-4 sm:grid-cols-2">
+                        <flux:input
+                            wire:model.live="dechargeNumeroPrefixe"
+                            :label="__('Préfixe')"
+                            maxlength="10"
+                            placeholder="ACC"
+                            :description="__('Lettres et chiffres uniquement, ex. ACC ou DCH.')"
+                        />
+                        <flux:input
+                            type="number"
+                            wire:model.live="dechargeNumeroChiffres"
+                            :label="__('Chiffres de la séquence')"
+                            min="3"
+                            max="10"
+                            :description="__('Nombre de zéros de remplissage devant le numéro d\'ordre.')"
+                        />
+                    </div>
+                    <div class="mt-3 flex items-center gap-2 rounded-lg bg-brand-surface-soft px-4 py-3 dark:bg-zinc-800">
+                        <flux:icon.eye class="size-4 shrink-0 text-zinc-400" />
+                        <flux:text class="text-sm">
+                            {{ __('Exemple de prochain numéro') }} :
+                            <span class="font-mono font-semibold text-brand-accent">{{ $this->apercuNumeroDecharge }}</span>
+                            <span class="text-zinc-500">— {{ __('les décharges déjà émises gardent leur numéro.') }}</span>
+                        </flux:text>
+                    </div>
+                </div>
+
+                <div class="mb-4 rounded-lg bg-brand-surface-soft p-3 text-sm dark:bg-zinc-800">
+                    <div class="mb-2 font-medium">{{ __('Repères disponibles') }}</div>
+                    <dl class="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                        @foreach (\App\Models\Parametre::REPERES_DECHARGE as $repere => $description)
+                            <div class="flex items-baseline gap-2">
+                                <dt><code class="rounded bg-white px-1 font-mono text-xs text-brand-accent dark:bg-zinc-900">{{ $repere }}</code></dt>
+                                <dd class="text-zinc-600">{{ __($description) }}</dd>
+                            </div>
+                        @endforeach
+                    </dl>
+                </div>
+
+                <div class="grid gap-4 sm:grid-cols-2">
+                    <flux:textarea wire:model="modeleDecharge.societe" :label="__('En-tête sous le logo')" rows="2" :description="__('Facultatif.')" />
+                    <flux:input wire:model="modeleDecharge.ville" :label="__('Ville')" :description="__('Imprimée devant la date : « Douala, le … ».')" />
+                    <flux:input wire:model="modeleDecharge.titre" :label="__('Titre')" />
+                    <flux:input wire:model="modeleDecharge.sous_titre" :label="__('Sous-titre')" :description="__('Facultatif.')" />
+                    <div class="sm:col-span-2">
+                        <flux:textarea wire:model="modeleDecharge.formule" :label="__('Formule')" rows="4" :description="__('Texte principal — les repères y sont imprimés en gras.')" />
+                    </div>
+                    {{-- 2026-11-09 — l'accueil ne signe plus : « remis par » est
+                         un cadre d'information, seul « reçu par » se signe. --}}
+                    <flux:input wire:model="modeleDecharge.cadre_remis" :label="__('Cadre d\'information — remis par (sans signature)')" />
+                    <flux:input wire:model="modeleDecharge.cadre_recu" :label="__('Cadre de signature — reçu par')" />
+                    <flux:input wire:model="modeleDecharge.observations" :label="__('Zone d\'observations — titre')" :description="__('Laisser vide pour retirer la zone.')" />
+                    <flux:input wire:model="modeleDecharge.pied" :label="__('Pied de page')" :description="__('Facultatif.')" />
+                    <div class="sm:col-span-2">
+                        <flux:textarea wire:model="modeleDecharge.mention" :label="__('Mention finale')" rows="2" :description="__('Facultatif.')" />
+                    </div>
+                </div>
+
+                <div class="mt-4 flex flex-wrap items-center gap-2 border-t border-brand-border pt-4 dark:border-zinc-700">
+                    <flux:button type="submit" form="apercu-modele-decharge" variant="outline" icon="eye">{{ __('Aperçu PDF') }}</flux:button>
+                    <flux:button type="button" variant="ghost" icon="arrow-path" wire:click="retablirModeleDecharge">{{ __('Rétablir le modèle par défaut') }}</flux:button>
+                    <flux:text class="text-sm text-zinc-500">{{ __('L\'aperçu reprend les textes saisis, même pas encore enregistrés.') }}</flux:text>
+                </div>
+            </div>
         </div>
+    </form>
+
+    {{-- Aperçu du modèle de décharge — formulaire SÉPARÉ (jamais imbriqué
+         dans celui de Livewire, que le bouton vise par son attribut form),
+         rempli au moment de l'envoi avec les valeurs saisies ($wire, même pas
+         encore enregistrées) et ouvert dans un nouvel onglet. --}}
+    <form
+        id="apercu-modele-decharge"
+        method="POST"
+        action="{{ route('admin.parametres.decharge.apercu') }}"
+        target="_blank"
+        class="hidden"
+        x-data
+        x-on:submit="$el.querySelectorAll('input[data-champ]').forEach((champ) => { champ.value = $wire.modeleDecharge[champ.dataset.champ] ?? '' })"
+    >
+        @csrf
+        @foreach (array_keys(\App\Models\Parametre::modeleDechargeParDefaut()) as $champ)
+            <input type="hidden" name="modele[{{ $champ }}]" data-champ="{{ $champ }}">
+        @endforeach
     </form>
 </section>

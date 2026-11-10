@@ -2,6 +2,7 @@
 
 namespace App\Livewire\Backend;
 
+use Flux\Flux;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\On;
@@ -17,6 +18,52 @@ use Livewire\Component;
 // dédiée (même principe qu'un panier/profil personnel).
 class NotificationBell extends Component
 {
+    // 2026-10-27 (tâche « Real time alert without the need of refreshing the
+    // page ») — id du destinataire, pour le canal privé écouté ci-dessous
+    // (même patron que RegistrationForm::$agentId). Non-nullable : le
+    // placeholder {utilisateurId} ne s'interpole pas sur null.
+    public int $utilisateurId = 0;
+
+    public function mount(): void
+    {
+        $this->utilisateurId = (int) Auth::id();
+    }
+
+    // Nouvelle notification diffusée par Reverb (voir
+    // App\Concerns\NotificationTempsReel) : compteur et liste rafraîchis,
+    // badge de la sidebar resynchronisé (événement navigateur, voir
+    // marquerCommeLue()), et toast avec le libellé — sans recharger la page
+    // ni sonder le serveur (Règle n°2 : jamais de wire:poll).
+    #[On('echo-private:App.Models.User.{utilisateurId},.notification.gec')]
+    public function notificationRecue(array $notification = []): void
+    {
+        unset($this->notifications, $this->nombreNonLues);
+
+        $this->dispatch('notifications-mises-a-jour');
+
+        if (filled($notification['libelle'] ?? null)) {
+            Flux::toast(
+                // 2026-10-30 — le message de l'auteur (relance, motif…) passe
+                // avant l'objet quand il y en a un.
+                text: filled($notification['commentaire'] ?? null)
+                    ? '« '.$notification['commentaire'].' »'
+                    : (string) ($notification['sous_libelle'] ?? ''),
+                heading: (string) $notification['libelle'],
+                // 2026-10-30 (« can the pop stay for 1min ») — 8 s → 60 s ;
+                // fermeture possible à tout moment avec « × ».
+                duration: 60000,
+                variant: match ($notification['couleur'] ?? null) {
+                    'danger' => 'danger',
+                    'warning' => 'warning',
+                    'success' => 'success',
+                    default => null,
+                },
+                // Même lien que dans la cloche (ex. la fiche du courrier).
+                link: $notification['lien'] ?? null,
+            );
+        }
+    }
+
     #[Computed]
     public function notifications()
     {

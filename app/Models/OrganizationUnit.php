@@ -39,9 +39,9 @@ class OrganizationUnit extends Model
     // Corporate") NE PEUT PAS avoir un Département comme enfant tant que
     // les deux partagent le même rang dans ORDRE_TYPES (la validation de
     // enregistrerNoeud() exige un rang STRICTEMENT croissant). Ajouté comme
-    // 6ème niveau, entre Site et Département — jamais ponté à un service
-    // réel (voir ServiceReelSynchroniseur::TYPES_SYNCHRONISES, inchangé),
-    // purement structurel comme Company/Site.
+    // 6ème niveau, entre Site et Département. 2026-10-23 — ponté à un service
+    // réel comme un Département (voir ServiceReelSynchroniseur::TYPES_SYNCHRONISES) :
+    // une Direction peut recevoir un courrier et le transmettre à ses unités.
     public const TYPE_DIRECTION = 'direction';
 
     public const TYPE_DEPARTMENT = 'department';
@@ -127,6 +127,90 @@ class OrganizationUnit extends Model
     public function estActif(): bool
     {
         return $this->status === self::STATUT_ACTIF;
+    }
+
+    // 2026-10-26 (notes de l'utilisateur : « Directeur → Direction, Chef de
+    // département → Département, Responsable → Service ») — titre du chef
+    // d'une entité selon son niveau, partout où l'application nomme ce chef
+    // (Organisation, transfert, transmission). Les données ne changent pas :
+    // c'est toujours responsible_user_id / services.responsable_id.
+    public static function titreChef(?string $type): string
+    {
+        return match ($type) {
+            self::TYPE_COMPANY => __('Directeur général'),
+            self::TYPE_SITE, self::TYPE_DIRECTION => __('Directeur'),
+            self::TYPE_DEPARTMENT => __('Chef de département'),
+            default => __('Responsable'),
+        };
+    }
+
+    public function titreDuChef(): string
+    {
+        return self::titreChef($this->type);
+    }
+
+    // Cascade de choix d'une entité (transfert, service d'un sortant,
+    // rattachement d'un utilisateur) — 2026-10-26 : un Service peut dépendre
+    // DIRECTEMENT d'une Direction ou du Site, sans Département (ex. « Service
+    // Juridique et Contentieux » sous la Direction Générale). Le niveau
+    // « Département / Service » liste donc les deux types sous le parent choisi.
+    public static function niveauDepartementSous(?int $parentId)
+    {
+        return self::query()
+            ->where('parent_id', $parentId)
+            ->whereIn('type', [self::TYPE_DEPARTMENT, self::TYPE_SERVICE])
+            ->where('status', self::STATUT_ACTIF)
+            ->orderBy('sort_order')
+            ->orderBy('name')
+            ->get();
+    }
+
+    // Dernier niveau de la cascade : services et sous-services placés sous
+    // l'entité choisie au niveau « Département / Service ».
+    public static function unitesSous(?int $parentId)
+    {
+        if ($parentId === null) {
+            return collect();
+        }
+
+        return self::query()
+            ->where('parent_id', $parentId)
+            ->whereIn('type', [self::TYPE_SERVICE, self::TYPE_SUB_SERVICE])
+            ->where('status', self::STATUT_ACTIF)
+            ->orderBy('name')
+            ->get();
+    }
+
+    // Positions [site, direction, departement, unite] de la cascade pour
+    // $noeud, en remontant ses ancêtres. La cascade n'affiche que deux
+    // niveaux sous la Direction : un niveau plus profond (ex. sous-service
+    // d'un service d'un département) est ignoré, comme avant.
+    public static function selectionCascade(?self $noeud): array
+    {
+        $chaine = [];
+
+        while ($noeud !== null && count($chaine) < 10) {
+            array_unshift($chaine, $noeud);
+            $noeud = $noeud->parent;
+        }
+
+        $selection = ['site' => null, 'direction' => null, 'departement' => null, 'unite' => null];
+
+        foreach ($chaine as $maillon) {
+            if ($maillon->type === self::TYPE_SITE) {
+                $selection['site'] = $maillon->id;
+            } elseif ($maillon->type === self::TYPE_DIRECTION) {
+                $selection['direction'] = $maillon->id;
+            } elseif (in_array($maillon->type, [self::TYPE_DEPARTMENT, self::TYPE_SERVICE, self::TYPE_SUB_SERVICE], true)) {
+                if ($selection['departement'] === null) {
+                    $selection['departement'] = $maillon->id;
+                } elseif ($selection['unite'] === null) {
+                    $selection['unite'] = $maillon->id;
+                }
+            }
+        }
+
+        return $selection;
     }
 
     // Même principe que DossierClassement::compterDocumentsDescendants() :

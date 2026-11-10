@@ -63,12 +63,16 @@
             </flux:button>
         </form>
 
-        <x-passkey-verify
-            separator-position="before"
-            :separator="__('ou')"
-            :label="__('Se connecter avec une clé d\'accès')"
-            :loading-label="__('Authentification en cours…')"
-        />
+        {{-- Clés d'accès désactivées le 2026-10-26 (page Sécurité retirée) :
+             bouton affiché seulement si la fonctionnalité est réactivée. --}}
+        @if (Laravel\Fortify\Features::canManagePasskeys())
+            <x-passkey-verify
+                separator-position="before"
+                :separator="__('ou')"
+                :label="__('Se connecter avec une clé d\'accès')"
+                :loading-label="__('Authentification en cours…')"
+            />
+        @endif
 
         {{-- Inscription publique désactivée (2026-09-23, config/fortify.php) :
              les comptes sont créés par un administrateur — dit explicitement

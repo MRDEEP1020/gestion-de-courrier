@@ -13,10 +13,12 @@
      bandeau supérieur ET lien "Filtres avancés" à côté de la recherche
      doivent piloter le MÊME panneau replié/déplié en dessous — deux scopes
      Alpine séparés, essayé d'abord, ne communiquaient jamais entre eux :
-     cliquer sur "Filtres" en haut ne dépliait rien). --}}
+     cliquer sur "Filtres" en haut ne dépliait rien).
+     apercuMobile (2026-10-27) : sous 1024 px, le panneau « Aperçu » est
+     caché et s'ouvre en plein écran au toucher d'une ligne. --}}
 <section
     class="w-full"
-    x-data="{ avance: @js($typeDocument !== '' || $statut !== '' || $priorite !== '' || $periode !== '' || $objet !== '' || $expediteur !== '' || $contenu !== '' || $confidentialite !== '' || $serviceId !== null || $dateDebut !== '' || $dateFin !== '' || $sens !== '') }"
+    x-data="{ apercuMobile: false, avance: @js($typeDocument !== '' || $statut !== '' || $priorite !== '' || $periode !== '' || $objet !== '' || $expediteur !== '' || $contenu !== '' || $confidentialite !== '' || $serviceId !== null || $dateDebut !== '' || $dateFin !== '' || $sens !== '') }"
 >
     {{-- document-preview.js définit window.DocumentPreview, utilisé par le
          panneau "Aperçu du courrier" plus bas — jamais chargé sur cette
@@ -251,15 +253,17 @@
                         <flux:select.option value="{{ $niveau }}">{{ __('Niveau :n', ['n' => $niveau]) }}</flux:select.option>
                     @endforeach
                 </flux:select>
-
+               @can('service', App\Models\Service::class)
                 <flux:select wire:model.live="serviceId" :label="__('Service')" placeholder="{{ __('Tous les services') }}">
                     @foreach ($this->services as $service)
                         <flux:select.option value="{{ $service->id }}">{{ $service->nom }}</flux:select.option>
                     @endforeach
                 </flux:select>
+                @endcan
 
-                <flux:input type="date" wire:model.live="dateDebut" :label="__('Date de mouvement — du')" />
-                <flux:input type="date" wire:model.live="dateFin" :label="__('Date de mouvement — au')" />
+
+                <flux:input type="date" wire:model.live="dateDebut" :label="__('Date de réception — du')" />
+                <flux:input type="date" wire:model.live="dateFin" :label="__('Date de réception — au')" />
 
                 <flux:select wire:model.live="sens" :label="__('Sens')" placeholder="{{ __('Entrant et sortant') }}">
                     <flux:select.option value="entrant">{{ __('Entrant') }}</flux:select.option>
@@ -305,27 +309,24 @@
     @endif
 
     @if ($this->peutTransfererAuMoinsUnCourrier)
-        <flux:modal name="transferer-selection-liste-modal" class="w-full max-w-sm">
+        {{-- 2026-10-23 (voir DECISIONS.md "Transfert direct au service et
+             acceptation") — transfert groupé vers UN service, plus vers une
+             personne : seuls les courriers "En attente de transfert" que
+             l'utilisateur peut transférer sont réellement envoyés. --}}
+        <flux:modal name="transferer-selection-liste-modal" class="w-full max-w-md">
             <form wire:submit="transfererSelection" class="space-y-4">
-                <flux:heading size="lg">{{ __('Transférer à') }}</flux:heading>
-                <flux:text class="text-zinc-500">{{ __(':n courrier(s) sélectionné(s).', ['n' => count($selectionnes)]) }}</flux:text>
+                <div>
+                    <flux:heading size="lg">{{ __('Transférer au service') }}</flux:heading>
+                    <flux:text class="mt-1 text-zinc-500">{{ __(':n courrier(s) sélectionné(s). Le responsable du service devra les accepter avant que vous lui remettiez les originaux.', ['n' => count($selectionnes)]) }}</flux:text>
+                </div>
 
-                @if ($this->destinatairesTransfert->isEmpty())
-                    <flux:text class="text-zinc-500">{{ __('Aucun destinataire autorisé pour votre compte. Contactez un administrateur.') }}</flux:text>
-                @else
-                    <flux:radio.group wire:model="destinataireChoisi">
-                        @foreach ($this->destinatairesTransfert as $destinataire)
-                            <flux:radio value="{{ $destinataire->id }}" label="{{ $destinataire->name }}" />
-                        @endforeach
-                    </flux:radio.group>
-                    @error('destinataireChoisi') <flux:text class="mt-1 text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
-                @endif
+                @include('partials.cascade-service')
 
                 <div class="flex justify-end gap-2">
                     <flux:modal.close>
                         <flux:button variant="ghost">{{ __('Annuler') }}</flux:button>
                     </flux:modal.close>
-                    <flux:button type="submit" variant="primary" :disabled="$this->destinatairesTransfert->isEmpty()">{{ __('Confirmer le transfert') }}</flux:button>
+                    <flux:button type="submit" variant="primary">{{ __('Confirmer le transfert') }}</flux:button>
                 </div>
             </form>
         </flux:modal>
@@ -372,12 +373,29 @@
             @if ($this->resultats->isEmpty())
                 <flux:text class="text-zinc-500">{{ __('Aucun courrier ne correspond à ces critères.') }}</flux:text>
             @else
-                <div x-data="squeletteMinimum()" class="overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                <div x-data="squeletteMinimum()" class="@container overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                     <div wire:loading.class.remove="hidden" x-ref="sentinelle" class="hidden" aria-hidden="true"></div>
+                    {{-- Format de tableau (2026-10-27, « can the table follow this
+                         format », capture d'un tableau de référence fournie) :
+                         en-têtes en petites capitales sans fond, soulignés d'un
+                         trait navy (colonne « # » retirée le 2026-10-29,
+                         « remove the # numbers from the tables ») ; lignes sur UNE
+                         seule ligne (hauteur relevée le 2026-10-28, « the space between the
+                         rows is too narrow », puis le 2026-10-29, « add some space again » :
+                         16 px en haut et en bas de chaque cellule) — un texte trop long est coupé (…) et lisible
+                         en entier au survol (title) et dans le panneau « Aperçu ».
+                         Les colonnes de texte (largeurs en % totalisant 100 %, contenu en
+                         w-0 min-w-full qui ne force jamais leur largeur) absorbent
+                         la place restante ; leur largeur minimale fait défiler le
+                         tableau dans sa carte plutôt que de les écraser ; les autres
+                         colonnes (w-px) se réduisent à leur contenu. Carte étroite
+                         (panneau « Aperçu » ouvert à côté, @container) : « Date de
+                         réception » (libellé du 2026-10-29) masquée — la date reste lisible dans le
+                         panneau, et le chronomètre passe sous le statut. --}}
                     <table class="w-full text-sm">
-                        <thead class="bg-brand-table-header text-left text-sm font-medium text-zinc-600 dark:bg-zinc-800">
+                        <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
                             <tr>
-                                <th class="w-4 py-3 pl-4 pr-2" wire:click.stop>
+                                <th class="w-4 py-3 pl-4 pr-3" wire:click.stop>
                                     <input
                                         type="checkbox"
                                         class="rounded border-zinc-300"
@@ -385,21 +403,29 @@
                                         @checked($this->resultats->isNotEmpty() && $this->resultats->pluck('id')->diff($selectionnes)->isEmpty())
                                     />
                                 </th>
-                                <th class="py-3 pr-3" wire:click.stop="trierPar('numero_reference')">
-                                    <button type="button" class="inline-flex items-center gap-1 hover:text-zinc-800 dark:hover:text-zinc-300">
+                                <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5" wire:click.stop="trierPar('numero_reference')">
+                                    <button type="button" class="inline-flex items-center gap-1 uppercase tracking-wide hover:text-zinc-800 dark:hover:text-zinc-300">
                                         {{ __('N° Courrier') }}
                                         <flux:icon.chevron-up-down class="size-3.5" />
                                     </button>
                                 </th>
-                                <th class="py-3 pr-3">{{ __('Expéditeur') }}</th>
-                                <th class="py-3 pr-3">{{ __('Destinataire') }}</th>
-                                <th class="py-3 pr-3">{{ __('Objet') }}</th>
+                                {{-- 2026-10-28 (« arrange it well ») — expéditeur et
+                                     destinataire de nouveau dans deux colonnes (une seule
+                                     information par colonne, 20 px entre colonnes en carte large, 12 px sinon). Carte
+                                     étroite (< 60rem, panneau « Aperçu » ouvert) : la colonne
+                                     Destinataire est masquée, le panneau l'affiche. --}}
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Expéditeur') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5 @max-[60rem]:hidden">{{ __('Destinataire') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Objet') }}</th>
                                 @if ($this->contenu !== '' && $this->peutRechercherContenu)
-                                    <th class="py-3 pr-3">{{ __('Extrait du document') }}</th>
+                                    <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Extrait du document') }}</th>
                                 @endif
-                                <th class="py-3 pr-3">{{ __('Date d\'envoi') }}</th>
-                                <th class="py-3 pr-3">{{ __('Statut') }}</th>
-                                <th class="py-3 pr-4">{{ __('Actions') }}</th>
+                                <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5 @max-[44rem]:hidden">{{ __('Date de réception') }}</th>
+                                <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Statut') }}</th>
+                                {{-- Libellé masqué visuellement (bouton « … » explicite) : libère
+                                     la largeur nécessaire aux autres colonnes, reste lu par les
+                                     lecteurs d'écran (2026-10-27). --}}
+                                <th class="relative w-px py-3 pr-4"><span class="sr-only">{{ __('Actions') }}</span></th>
                             </tr>
                         </thead>
                         {{-- Squelette (2026-09-24) — même nombre de colonnes
@@ -424,19 +450,33 @@
                                 <tr
                                     wire:key="ligne-{{ $courrier->id }}"
                                     wire:click="ouvrirApercu({{ $courrier->id }})"
+                                    x-on:click="apercuMobile = true"
                                     class="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800"
                                     @class(['bg-brand-accent/5' => $this->courrierApercu?->id === $courrier->id])
                                 >
-                                    <td class="py-3 pl-4 pr-2" wire:click.stop>
+                                    @php
+                                        $expediteurLigne = $courrier->expediteur_organisation ?: $courrier->expediteur_nom ?: __('—');
+                                        $destinataireLigne = $courrier->destinataire ?: ($courrier->service?->nom ?? __('—'));
+                                        // Largeurs des colonnes de texte : 100 % à elles seules (avec ou sans
+                                        // la colonne Destinataire, masquée en carte étroite), les autres
+                                        // colonnes (w-px) gardent leur contenu.
+                                        $avecExtrait = $this->contenu !== '' && $this->peutRechercherContenu;
+                                    @endphp
+                                    <td class="py-4 pl-4 pr-3" wire:click.stop>
                                         <input type="checkbox" class="rounded border-zinc-300" wire:model.live="selectionnes" value="{{ $courrier->id }}" />
                                     </td>
-                                    <td class="py-3 pr-3 font-medium text-brand-accent">
-                                        {{ $courrier->numero_reference }}
+                                    <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 font-medium text-brand-accent">
+                                        <span class="block max-w-36 truncate" title="{{ $courrier->numero_reference }}">{{ $courrier->numero_reference }}</span>
                                     </td>
-                                    <td class="py-3 pr-3 text-zinc-600">{{ $courrier->expediteur_organisation ?: $courrier->expediteur_nom ?: __('—') }}</td>
-                                    <td class="py-3 pr-3 text-zinc-600">{{ $courrier->destinataire ? Str::limit($courrier->destinataire, 40) : ($courrier->service?->nom ?? __('—')) }}</td>
-                                    <td class="py-3 pr-3">
-                                        {{ Str::limit($courrier->objet, 50) }}
+                                    <td class="{{ $avecExtrait ? 'w-[18%] @max-[60rem]:w-[25%]' : 'w-[22%] @max-[60rem]:w-[30%]' }} min-w-20 py-4 pr-3 @min-[60rem]:pr-5">
+                                        <div class="w-0 min-w-full truncate text-zinc-800 dark:text-zinc-200" title="{{ $expediteurLigne }}">{{ $expediteurLigne }}</div>
+                                    </td>
+                                    <td class="{{ $avecExtrait ? 'w-[10%]' : 'w-[12%]' }} min-w-16 py-4 pr-3 @min-[60rem]:pr-5 @max-[60rem]:hidden">
+                                        <div class="w-0 min-w-full truncate text-zinc-600 dark:text-zinc-400" title="{{ $destinataireLigne }}">{{ $destinataireLigne }}</div>
+                                    </td>
+                                    <td class="{{ $avecExtrait ? 'w-[42%] @max-[60rem]:w-[45%]' : 'w-[66%] @max-[60rem]:w-[70%]' }} min-w-22 @min-[60rem]:min-w-32 py-4 pr-3 @min-[60rem]:pr-5">
+                                        <div class="flex w-0 min-w-full items-center gap-1.5">
+                                            <span class="min-w-0 truncate" title="{{ $courrier->objet }}">{{ $courrier->objet }}</span>
                                         @if ($courrier->confidentialite > 1)
                                             {{-- Navy, pas teal (2026-09-17, système de couleurs GEC —
                                                  "confidentiel" n'a pas de couleur dédiée dans le
@@ -447,26 +487,31 @@
                                                  Niveau NUMÉRIQUE (2026-09-21, "numbers ... not
                                                  confidential or whatever", puis "THE LABEL SHOULD
                                                  BE NIVEAU 1 OR LEVEL 1"). --}}
-                                            <span class="ml-1 inline-flex items-center rounded-full bg-brand-navy px-2 py-0.5 text-xs font-medium text-white">
+                                            <span class="inline-flex shrink-0 items-center whitespace-nowrap rounded-md bg-brand-navy px-1.5 py-0.5 text-xs font-semibold text-white">
                                                 {{ __('Niveau :n', ['n' => $courrier->confidentialite]) }}
                                             </span>
                                         @endif
+                                        </div>
                                     </td>
                                     @if ($this->contenu !== '' && $this->peutRechercherContenu)
-                                        <td class="py-3 pr-3 text-zinc-500 italic">{{ $this->extraitTexteOcr($courrier) ?? __('—') }}</td>
+                                        <td class="w-[30%] min-w-22 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 italic"><div class="w-0 min-w-full truncate" title="{{ $this->extraitTexteOcr($courrier) }}">{{ $this->extraitTexteOcr($courrier) ?? __('—') }}</div></td>
                                     @endif
-                                    <td class="py-3 pr-3 text-zinc-600">{{ $courrier->date_mouvement->format('d/m/Y') }}</td>
-                                    <td class="py-3 pr-3">
+                                    <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 text-zinc-600 @max-[44rem]:hidden">{{ $courrier->date_mouvement->format('d/m/Y') }}</td>
+                                    <td class="py-4 pr-3 @min-[60rem]:pr-5">
                                         {{-- Chronomètre à côté du statut (2026-09-28, "when the date
                                              is comming soon the colours should change") — même badge
                                              que ShowCourrier/Dashboard, se fige automatiquement si
-                                             aucune échéance n'existe (voir son @if interne). Empilé
-                                             sur 2 lignes (2026-10-02, positionnement revu). --}}
-                                        <x-statut-avec-echeance :courrier="$courrier" :masquer-temps="true" />
+                                             aucune échéance n'existe (voir son @if interne).
+                                             2026-10-27 — sur la même ligne que le statut (format
+                                             de tableau compact), pastille resserrée. --}}
+                                        <div class="flex items-center gap-1 whitespace-nowrap @max-[44rem]:flex-col @max-[44rem]:items-start">
+                                            <x-statut-badge :statut="$courrier->statut" class="rounded-md! px-2! font-semibold!" />
+                                            <x-chronometre :courrier="$courrier" :masquer-temps="true" />
+                                        </div>
                                     </td>
-                                    <td class="py-3 pr-4" wire:click.stop>
+                                    <td class="py-4 pr-4 text-center" wire:click.stop>
                                         <flux:dropdown position="bottom" align="end">
-                                            <flux:button variant="ghost" size="sm" icon="ellipsis-horizontal" square :aria-label="__('Actions')" />
+                                            <flux:button variant="ghost" size="xs" icon="ellipsis-horizontal" square :aria-label="__('Actions')" />
                                             <flux:menu>
                                                 <flux:menu.item icon="eye" :href="route('courriers.show', $courrier->id)" wire:navigate>
                                                     {{ __('Voir') }}
@@ -504,17 +549,30 @@
                  vers courriers.document.apercu (déjà existant) au lieu de
                  brouillons.apercu. wire:key sur l'id du courrier : changer
                  de courrier doit recharger un NOUVEAU document, jamais
-                 réutiliser l'instance pdf.js du précédent. --}}
-            <div wire:key="panneau-apercu-{{ $courrier->id }}" x-data="squeletteMinimum()" class="self-start rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                 réutiliser l'instance pdf.js du précédent.
+                 Petits écrans (2026-10-27, « should we hide the sidepanel…
+                 on the responsive side ») : plus empilé tout en bas, sous le
+                 tableau — feuille plein écran ouverte au toucher d'une ligne
+                 (apercuMobile). Fermée = invisible + décalée hors écran, PAS
+                 display:none : document-preview.js calcule l'échelle sur la
+                 largeur de la boîte, qui doit rester mesurable. --}}
+            <div
+                wire:key="panneau-apercu-{{ $courrier->id }}"
+                x-data="squeletteMinimum()"
+                class="self-start rounded-2xl border border-brand-border bg-white shadow-sm max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:overflow-y-auto max-lg:overscroll-contain max-lg:rounded-none max-lg:border-0 max-lg:transition max-lg:duration-200 dark:border-zinc-700 dark:bg-zinc-900"
+                :class="apercuMobile ? 'max-lg:visible max-lg:translate-x-0' : 'max-lg:invisible max-lg:translate-x-full'"
+            >
                 {{-- Panneau désormais TOUJOURS affiché (demande explicite de
                      l'utilisateur, 2026-09-18 : "those cards panel should
                      always be shown not mask") — plus de bouton "Fermer"/X,
                      qui n'aurait plus de sens : il n'y a plus d'état "masqué"
                      vers lequel revenir. --}}
                 <div wire:loading.class.remove="hidden" x-ref="sentinelle" class="hidden" aria-hidden="true"></div>
-                <div class="flex items-center gap-2 border-b border-brand-border p-4 dark:border-zinc-700">
+                <div class="flex items-center gap-2 border-b border-brand-border p-4 max-lg:sticky max-lg:top-0 max-lg:z-10 max-lg:bg-white dark:border-zinc-700 dark:max-lg:bg-zinc-900">
                     <flux:icon.information-circle class="size-4 text-brand-accent" />
                     <flux:heading level="3">{{ __('Aperçu du courrier') }}</flux:heading>
+                    {{-- Petits écrans seulement : sur grand écran le panneau reste toujours affiché. --}}
+                    <flux:button size="sm" variant="ghost" icon="x-mark" class="ml-auto lg:hidden" x-on:click="apercuMobile = false">{{ __('Fermer') }}</flux:button>
                 </div>
 
                 {{-- Squelette (2026-09-24) — changer de ligne
@@ -530,8 +588,31 @@
                 </div>
 
                 <div x-show="!visible" class="p-4">
-                    @if ($courrier->fichier_path)
-                        @php $telechargerUrlListe = auth()->user()->can('telecharger', $courrier) ? route('courriers.document', $courrier) : null; @endphp
+                    {{-- 2026-10-23 — contenu masqué tant que le service n'a pas
+                         accepté le courrier (CourrierPolicy::voirContenu()). --}}
+                    @if ($courrier->fichier_path && auth()->user()->cannot('voirContenu', $courrier))
+                        <x-apercu.contenu-masque />
+                                            <div class="mt-4 flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            @can('update', $courrier)
+                                <flux:button size="sm" variant="primary" icon="pencil-square" :href="route('courriers.modifier', $courrier->id)" wire:navigate>
+                                    {{ __('Éditer') }}
+                                </flux:button>
+                            @endcan
+                            {{-- "Supprimer" (2026-09-23) : courriers.supprimer
+                                 (Administrateur par défaut), suppression
+                                 LOGIQUE avec motif obligatoire tracé dans
+                                 l'historique, jamais un courrier archivé
+                                 (Règle n°5, CourrierPolicy::delete()). --}}
+                            @can('delete', $courrier)
+                                <flux:modal.trigger name="courrier-suppression">
+                                    <flux:button size="sm" variant="danger" icon="trash">{{ __('Supprimer') }}</flux:button>
+                                </flux:modal.trigger>
+                            @endcan
+                        </div>
+                    </div>
+                    @elseif ($courrier->fichier_path)
+                        {{-- 2026-11-09 — aperçu sécurisé (pages filigranées), plus le fichier. --}}
                         <div
                             wire:ignore
                             x-data="{
@@ -539,7 +620,7 @@
                                 zoom: 100,
                                 pageActuelle: 1,
                                 numPages: 1,
-                                url: @js(route('courriers.document.apercu', $courrier)),
+                                url: @js(route('apercus.manifeste', ['courrier', $courrier->id])),
                                 instance() {
                                     const apercu = window.DocumentPreview.obtenir(this.url + ':liste');
                                     apercu.boite = document.getElementById('apercu-liste-{{ $courrier->id }}-corps');
@@ -612,7 +693,6 @@
                                 variant="panneau"
                                 :nom-fichier="basename($courrier->fichier_path)"
                                 :agrandir-evenement="'apercu-liste-agrandi-'.$courrier->id"
-                                :telecharger-url="$telechargerUrlListe"
                             />
                             <x-apercu.visionneuse id="apercu-liste-{{ $courrier->id }}" />
                         </div>
@@ -631,7 +711,7 @@
                             x-data="{
                                 erreur: null,
                                 zoom: 100,
-                                url: @js(route('courriers.document.apercu', $courrier)),
+                                url: @js(route('apercus.manifeste', ['courrier', $courrier->id])),
                                 pageActuelle: 1,
                                 numPages: 1,
                                 instance() {
@@ -712,7 +792,6 @@
                                         variant="modale"
                                         :nom-fichier="basename($courrier->fichier_path)"
                                         :numero-reference="$courrier->numero_reference"
-                                        :telecharger-url="$telechargerUrlListe"
                                         :fermer-modale="'apercu-liste-agrandi-'.$courrier->id"
                                     />
 
@@ -731,7 +810,6 @@
                                                 :destinataire="$courrier->destinataire"
                                                 :date="$courrier->date_mouvement"
                                                 :nom-fichier="basename($courrier->fichier_path)"
-                                                :telecharger-url="$telechargerUrlListe"
                                             />
                                         </div>
                                     </div>
@@ -769,7 +847,7 @@
                         <div class="flex items-start gap-2">
                             <flux:icon.calendar class="mt-0.5 size-4 shrink-0 text-zinc-400" />
                             <div>
-                                <dt class="text-zinc-500">{{ __('Date d\'envoi') }}</dt>
+                                <dt class="text-zinc-500">{{ __('Date de réception') }}</dt>
                                 <dd class="font-medium">{{ $courrier->date_mouvement->format('d/m/Y') }}</dd>
                             </div>
                         </div>
@@ -782,12 +860,12 @@
                                 <flux:icon.paper-clip class="mt-0.5 size-4 shrink-0 text-zinc-400" />
                                 <div>
                                     <dt class="text-zinc-500">{{ __('Pièce(s) jointe(s)') }}</dt>
-                                    {{-- Nom seul (sans lien) sans courriers.telecharger (2026-09-23). --}}
-                                    @php $peutTelecharger = auth()->user()->can('telecharger', $courrier); @endphp
+                                    {{-- 2026-11-09 — aperçu sécurisé, plus aucun téléchargement. --}}
+                                    @php $peutVoirContenuPj = auth()->user()->can('voirContenu', $courrier); @endphp
                                     @foreach ($courrier->piecesJointes as $pieceJointe)
                                         <dd class="font-medium">
-                                            @if ($peutTelecharger)
-                                                <flux:link :href="route('pieces-jointes.telecharger', $pieceJointe)">{{ $pieceJointe->nom_original }}</flux:link>
+                                            @if ($peutVoirContenuPj)
+                                                <x-apercu.piece-jointe :piece-jointe="$pieceJointe" suffixe="liste" :reference="$courrier->numero_reference" />
                                             @else
                                                 {{ $pieceJointe->nom_original }}
                                             @endif
@@ -798,25 +876,7 @@
                         @endif
                     </dl>
 
-                    <div class="mt-4 flex items-center justify-between">
-                        <div class="flex items-center gap-2">
-                            @can('update', $courrier)
-                                <flux:button size="sm" variant="primary" icon="pencil-square" :href="route('courriers.modifier', $courrier->id)" wire:navigate>
-                                    {{ __('Éditer') }}
-                                </flux:button>
-                            @endcan
-                            {{-- "Supprimer" (2026-09-23) : courriers.supprimer
-                                 (Administrateur par défaut), suppression
-                                 LOGIQUE avec motif obligatoire tracé dans
-                                 l'historique, jamais un courrier archivé
-                                 (Règle n°5, CourrierPolicy::delete()). --}}
-                            @can('delete', $courrier)
-                                <flux:modal.trigger name="courrier-suppression">
-                                    <flux:button size="sm" variant="danger" icon="trash">{{ __('Supprimer') }}</flux:button>
-                                </flux:modal.trigger>
-                            @endcan
-                        </div>
-                    </div>
+
 
                     @can('delete', $courrier)
                         <flux:modal name="courrier-suppression" class="md:w-md">

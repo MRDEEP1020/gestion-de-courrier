@@ -2,7 +2,9 @@
 
 namespace App\Notifications;
 
+use App\Concerns\NotificationTempsReel;
 use App\Models\Courrier;
+use App\Services\NotificationPreferenceService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
@@ -14,7 +16,7 @@ use Illuminate\Notifications\Notification;
 // l'alerte comme envoyée.
 class CourrierEnRetardNotification extends Notification
 {
-    use Queueable;
+    use NotificationTempsReel, Queueable;
 
     public function __construct(
         public Courrier $courrier,
@@ -30,7 +32,7 @@ class CourrierEnRetardNotification extends Notification
 
     public function via(object $notifiable): array
     {
-        return ['mail', 'database'];
+        return app(NotificationPreferenceService::class)->canaux($notifiable, 'alertes_sla');
     }
 
     // Centre de notifications in-app (2026-10-05, Module 7) — mêmes règles

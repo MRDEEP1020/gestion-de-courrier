@@ -53,4 +53,39 @@ return [
         'binary' => env('GHOSTSCRIPT_PATH'),
     ],
 
+    // Module 9 — conformité de l'archivage (2026-10-30, voir DECISIONS.md) :
+    // scellement automatique des empreintes SHA-256 à chaque fichier ajouté
+    // ou déplacé, et copie d'archive PDF/A à l'archivage. Actifs par défaut ;
+    // désactivés en test (phpunit.xml), comme le disque de secours, pour
+    // qu'aucun test ne lise le vrai stockage ni ne lance Ghostscript en tâche
+    // de fond — les tests de ces fonctionnalités les réactivent explicitement.
+    'archivage' => [
+        'scellement_auto' => env('ARCHIVAGE_SCELLEMENT_AUTO', true),
+        'pdfa_auto' => env('ARCHIVAGE_PDFA_AUTO', true),
+        // 2026-11-09 — pages de l'aperçu sécurisé préparées en file
+        // d'attente dès qu'un fichier arrive (désactivé en test, comme
+        // ci-dessus : aucun test ne lance Ghostscript sans le demander).
+        'apercu_auto' => env('ARCHIVAGE_APERCU_AUTO', true),
+    ],
+
+    // 2026-11-09 — occupation du stockage (Sécurité & Audit › Stockage) :
+    // dossier de données du stockage objet, quand il est sur un disque de ce
+    // serveur (MinIO), pour afficher l'espace libre. Vide pour un stockage
+    // cloud (capacité gérée par le fournisseur).
+    'stockage' => [
+        'chemin_disque' => env('STOCKAGE_CHEMIN_DISQUE'),
+    ],
+
+    // 2026-11-09 — chiffrement des fichiers au repos (App\Services\
+    // ChiffrementFichiers). Clé de 32 octets « base64:… », créée par
+    // `php artisan gec:cle-fichiers`, à conserver EN LIEU SÛR hors du
+    // serveur : la perdre rend tous les fichiers illisibles. Pour changer de
+    // clé : nouvelle clé + nouvel identifiant, l'ancienne passe dans
+    // GEC_FICHIERS_CLES_PRECEDENTES (« 1=base64:…,2=base64:… »).
+    'chiffrement' => [
+        'cle' => env('GEC_FICHIERS_CLE'),
+        'cle_id' => (int) env('GEC_FICHIERS_CLE_ID', 1),
+        'cles_precedentes' => env('GEC_FICHIERS_CLES_PRECEDENTES'),
+    ],
+
 ];

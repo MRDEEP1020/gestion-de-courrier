@@ -132,4 +132,23 @@ class NotificationsIndexTest extends TestCase
             ->test(NotificationsIndex::class)
             ->assertSee(__('Aucune notification pour l\'instant.'));
     }
+
+    // 2026-10-30 (« where does the message go », capture d'une relance) —
+    // le message de l'auteur est enregistré avec la notification et affiché.
+    public function test_le_message_de_la_relance_est_affiche_avec_la_notification(): void
+    {
+        $utilisateur = $this->utilisateurAvecPrivilege('general.notifications');
+        $auteur = User::factory()->create(['name' => 'Responsable Tresor']);
+        $courrier = $this->courrier();
+
+        $utilisateur->notify(new CourrierNotification($courrier, 'relance', 'Merci de traiter avant vendredi', $auteur));
+
+        $this->assertSame('Merci de traiter avant vendredi', $utilisateur->notifications()->first()->data['commentaire']);
+
+        Livewire::actingAs($utilisateur)
+            ->test(NotificationsIndex::class)
+            ->assertSee('Relance : le courrier '.$courrier->numero_reference.' attend votre traitement')
+            ->assertSee('« Merci de traiter avant vendredi »')
+            ->assertSee(__('Envoyé par :nom', ['nom' => 'Responsable Tresor']));
+    }
 }

@@ -2,8 +2,10 @@
 
 namespace App\Notifications;
 
+use App\Concerns\NotificationTempsReel;
 use App\Models\DossierClassement;
 use App\Models\User;
+use App\Services\NotificationPreferenceService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -15,7 +17,7 @@ use Illuminate\Notifications\Notification;
 // "Dossiers & Archives".
 class DossierPartageNotification extends Notification implements ShouldQueue
 {
-    use Queueable;
+    use NotificationTempsReel, Queueable;
 
     public function __construct(
         public DossierClassement $dossier,
@@ -27,7 +29,7 @@ class DossierPartageNotification extends Notification implements ShouldQueue
 
     public function via(object $notifiable): array
     {
-        return ['mail', 'database'];
+        return app(NotificationPreferenceService::class)->canaux($notifiable, 'dossiers');
     }
 
     private function libelle(): string

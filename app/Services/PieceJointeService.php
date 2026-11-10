@@ -4,11 +4,15 @@ namespace App\Services;
 
 use App\Jobs\ReplicateFichierJob;
 use App\Models\Courrier;
+use App\Models\CourrierBrouillon;
 use App\Models\CourrierHistorique;
 use App\Models\PieceJointe;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use RuntimeException;
+use Throwable;
 
 class PieceJointeService
 {
@@ -63,6 +67,87 @@ class PieceJointeService
             'action' => 'ajout_piece_jointe',
             'commentaire' => $fichier->getClientOriginalName(),
         ]);
+
+        return $pieceJointe;
+    }
+
+    // Module 1/2 (2026-10-23, demande explicite de l'utilisateur : plusieurs
+    // documents scannés pour un même courrier, ex. la lettre ET la facture) —
+    // un document scanné en attente (brouillon) devient une pièce jointe du
+    // courrier : même chemin que attacher() (Règle n°4), même trace
+    // d'historique, même copie de secours. Ligne verrouillée et marquée
+    // finalisée AVANT la copie (même principe que
+    // RegistrationForm::finaliserBrouillon()) : jamais rattaché deux fois.
+    // En cas d'échec, le brouillon redevient "en attente" (il réapparaît dans
+    // la liste des documents scannés) et l'exception remonte à l'appelant.
+    // Retourne null si le brouillon a déjà été utilisé entre-temps.
+    public function attacherDepuisBrouillon(Courrier $courrier, CourrierBrouillon $brouillon, int $auteurId): ?PieceJointe
+    {
+        $verrouille = DB::transaction(function () use ($brouillon) {
+            $ligne = CourrierBrouillon::whereKey($brouillon->id)->lockForUpdate()->first();
+
+            if (! $ligne || $ligne->finalise_le !== null) {
+                return null;
+            }
+
+            $ligne->update(['finalise_le' => now()]);
+
+            return $ligne;
+        });
+
+        if ($verrouille === null) {
+            return null;
+        }
+
+        try {
+            $courrier->loadMissing('service');
+
+            $chemin = sprintf(
+                'courriers/%d/%s/%s/%s.%s',
+                now()->year,
+                $courrier->segmentClassement(),
+                $courrier->numero_reference,
+                Str::uuid(),
+                pathinfo($verrouille->fichier_path, PATHINFO_EXTENSION) ?: 'pdf',
+            );
+
+            Storage::disk('s3')->copy($verrouille->fichier_path, $chemin);
+
+            if (! Storage::disk('s3')->exists($chemin)) {
+                throw new RuntimeException('Copie du document scanné introuvable au chemin final après coup.');
+            }
+        } catch (Throwable $e) {
+            $verrouille->update(['finalise_le' => null]);
+
+            throw $e;
+        }
+
+        $pieceJointe = $courrier->piecesJointes()->create([
+            'fichier_path' => $chemin,
+            'nom_original' => $verrouille->nom_original,
+            'type_mime' => $verrouille->type_mime,
+            'taille' => $verrouille->taille,
+            'brouillon_origine_id' => $verrouille->id,
+        ]);
+
+        CourrierHistorique::create([
+            'courrier_id' => $courrier->id,
+            'auteur_id' => $auteurId,
+            'action' => 'ajout_piece_jointe',
+            'commentaire' => $verrouille->nom_original,
+        ]);
+
+        ReplicateFichierJob::dispatch($chemin)->onQueue('replication');
+
+        // Fichier déjà copié à son emplacement définitif : le brouillon et son
+        // fichier provisoire disparaissent (même nettoyage que finaliserBrouillon()).
+        Storage::disk('s3')->delete($verrouille->fichier_path);
+
+        if (filled(config('filesystems.disks.s3_backup.bucket')) && Storage::disk('s3_backup')->exists($verrouille->fichier_path)) {
+            Storage::disk('s3_backup')->delete($verrouille->fichier_path);
+        }
+
+        $verrouille->delete();
 
         return $pieceJointe;
     }

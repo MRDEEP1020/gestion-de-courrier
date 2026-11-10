@@ -13,7 +13,6 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Laravel\Fortify\Contracts\PasskeyUser;
 use Laravel\Fortify\PasskeyAuthenticatable;
@@ -39,7 +38,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
-#[Fillable(['name', 'email', 'password', 'profil_id', 'service_id', 'telephone', 'poste', 'photo_path', 'actif', 'niveau_confidentialite'])]
+#[Fillable(['name', 'email', 'password', 'profil_id', 'service_id', 'telephone', 'poste', 'photo_path', 'actif', 'niveau_confidentialite', 'preferences_notifications'])]
 #[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
 class User extends Authenticatable implements PasskeyUser
 {
@@ -78,6 +77,7 @@ class User extends Authenticatable implements PasskeyUser
             'actif' => 'boolean',
             'derniere_connexion_le' => 'datetime',
             'niveau_confidentialite' => 'integer',
+            'preferences_notifications' => 'array',
         ];
     }
 
@@ -146,6 +146,15 @@ class User extends Authenticatable implements PasskeyUser
         return $this->privilegesCles()->contains($cle);
     }
 
+    public function frequenceRelanceSlaJours(): int
+    {
+        $personnalisee = $this->preferences_notifications['sla_relance_jours'] ?? null;
+
+        return is_numeric($personnalisee)
+            ? max(1, min(10, (int) $personnalisee))
+            : Parametre::actuel()->sla_relance_jours;
+    }
+
     // once() : mémoïsé pour la durée de la requête — plusieurs abilities
     // sont souvent vérifiées sur la même page (Règle n°3, éviter de
     // re-requêter à chaque hasPrivilege()).
@@ -156,14 +165,31 @@ class User extends Authenticatable implements PasskeyUser
             ->unique());
     }
 
-    // Module 1/4 — délégation DGA/ADJ absent(e) → RH (2026-10-06, voir
-    // DECISIONS.md "Délégation DGA/ADJ absents"). Mêmes IDs de DGA/ADJ dont
-    // CET utilisateur couvre actuellement l'absence, utilisés par
-    // CourrierPolicy::validerService() et Courrier::scopeVisiblePar() —
-    // mémoïsé comme privilegesCles() ci-dessus, vérifié plusieurs fois par page.
-    public function delegationsDgaActivesIds(): array
+    // 2026-10-23 (voir DECISIONS.md "Transmission descendante par la
+    // Direction") — services des unités situées SOUS une entité dont cet
+    // utilisateur est le responsable (ex. le chef d'une Direction suit les
+    // courriers de ses départements). Lecture seule : seule la CONSULTATION
+    // s'appuie dessus (CourrierPolicy::view(), Courrier::scopeVisiblePar()),
+    // jamais l'affectation ni la validation. Mémoïsé (vérifié plusieurs fois
+    // par page), même principe que privilegesCles().
+    public function idsServicesSupervises(): array
     {
-        return once(fn () => DelegationDga::delegantsIdsPour($this->id));
+        return once(function () {
+            $entitesDirigees = OrganizationUnit::where('responsible_user_id', $this->id)->get();
+
+            return $entitesDirigees->isEmpty() ? [] : OrganizationUnit::idsServicesReelsSousArbre($entitesDirigees);
+        });
+    }
+
+    // 2026-10-26 — entité affichée dans le menu du compte : celle qu'il
+    // dirige, sinon son rattachement principal, sinon l'entité reliée à son
+    // service (même ordre que la colonne « Département » de Utilisateurs &
+    // Accès, voir UserList::departementLabelDe()). Mémoïsé : lu à chaque page.
+    public function entitePrincipale(): ?OrganizationUnit
+    {
+        return once(fn () => OrganizationUnit::where('responsible_user_id', $this->id)->first()
+            ?? $this->organizationUnits()->orderByDesc('organization_unit_user.is_primary')->first()
+            ?? ($this->service_id ? OrganizationUnit::where('service_id', $this->service_id)->first() : null));
     }
 
     /**
@@ -181,10 +207,14 @@ class User extends Authenticatable implements PasskeyUser
     // Page "Utilisateurs & Accès" (2026-09-21) — photo de profil optionnelle,
     // stockée sur S3 (Règle n°4, jamais le disque local) via AvatarService.
     // `initials()` ci-dessus reste le repli d'affichage tant qu'aucune photo
-    // n'a été téléversée.
+    // n'a été téléversée. 2026-10-26 — servie par l'application
+    // (UtilisateurPhotoController), jamais par un lien direct vers le bucket
+    // privé ; `v` change avec chaque nouvelle photo (cache navigateur).
     public function photoUrl(): ?string
     {
-        return $this->photo_path ? Storage::disk('s3')->url($this->photo_path) : null;
+        return $this->photo_path
+            ? route('utilisateurs.photo', ['user' => $this->id, 'v' => substr(md5($this->photo_path), 0, 8)])
+            : null;
     }
 
     // Garde-fou anti-verrouillage (même principe que

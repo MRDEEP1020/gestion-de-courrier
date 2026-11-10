@@ -33,4 +33,21 @@ class AvatarService
 
         return $chemin;
     }
+
+    // 2026-10-26 — « Retirer la photo » depuis « Mon profil » : retour aux
+    // initiales, fichier supprimé du stockage.
+    public function supprimer(User $user): void
+    {
+        $ancienChemin = $user->photo_path;
+
+        if ($ancienChemin === null) {
+            return;
+        }
+
+        $user->update(['photo_path' => null]);
+
+        if (Storage::disk('s3')->exists($ancienChemin)) {
+            Storage::disk('s3')->delete($ancienChemin);
+        }
+    }
 }

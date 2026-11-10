@@ -206,8 +206,53 @@
         @vite('resources/js/document-preview.js')
     @endassets
 
-    <form wire:submit="enregistrer" class="mt-6 grid gap-6 lg:grid-cols-[1fr_320px]">
-        <div class="space-y-6">
+    {{-- 2026-10-22 — `apercuOuvert` : état de l'ouverture du panneau latéral
+         "Aperçu du document", porté par ALPINE et non par Livewire :
+         masquage purement visuel, sans effet sur les données ni sur les
+         droits — un état Livewire additionnel ferait un aller-retour réseau
+         et remorphage tout le composant pour rien (Règle n°2 : composants
+         Livewire légers). --}}
+    <form wire:submit="enregistrer" x-data="{ apercuOuvert: true }" class="mt-6 grid gap-6" :class="apercuOuvert ? 'lg:grid-cols-[1fr_320px]' : 'lg:grid-cols-1'">
+        <div class="relative space-y-6">
+            {{-- 2026-10-30 (« loading state for when we select a courrier and
+                 when it starts extracting OCR and pre-filling », maquette
+                 fournie) — même écran (components/chargement) pour trois
+                 moments ; l'aperçu du document à droite reste visible. --}}
+            {{-- (1) Ouverture d'un document en attente : navigation Livewire,
+                 annoncée par le menu de choix (évènement chargement-document). --}}
+            <x-chargement x-data="{ visible: false }" x-show="visible" x-cloak x-on:chargement-document.window="visible = true"
+                :titre="__('Ouverture du document…')" :astuce="__('Astuce : Ctrl + K pour rechercher un courrier à tout moment.')" />
+
+            {{-- (2) Import d'un fichier ou changement de document principal. --}}
+            <x-chargement wire:loading.flex wire:target="importerFichier,utiliserCommePrincipal"
+                :titre="__('Préparation du document…')" :astuce="__('Astuce : Ctrl + K pour rechercher un courrier à tout moment.')" />
+
+            {{-- (3) Extraction du texte (OCR) puis pré-remplissage : retiré dès
+                 que brouillonOcrTermine() (temps réel) rafraîchit la fiche.
+                 « Continuer sans attendre » : jamais bloqué si l'évènement
+                 temps réel n'arrive pas (Reverb coupé…). --}}
+            @if ($this->brouillon && in_array($this->brouillon->ocr_statut, ['non_traite', 'en_cours'], true))
+                <x-chargement wire:key="chargement-ocr-{{ $this->brouillon->id }}" x-data="{ masque: false }" x-show="!masque"
+                    :titre="__('Extraction du texte et pré-remplissage…')"
+                    :texte="__('Les champs se rempliront tout seuls dès la fin de l\'analyse : il vous restera à les vérifier.')"
+                    :astuce="__('Astuce : Ctrl + K pour rechercher un courrier à tout moment.')">
+                    <flux:button type="button" size="sm" variant="ghost" class="mt-2" x-on:click="masque = true">{{ __('Continuer sans attendre') }}</flux:button>
+                </x-chargement>
+            @endif
+
+            {{-- Bouton de RÉOUVERTURE du panneau latéral — n'apparaît que
+                 lorsque le panneau a été fermé (bouton "Fermer" de son
+                 en-tête). `type="button"` OBLIGATOIRE : ce bouton est dans le
+                 <form wire:submit="enregistrer">, un <button> sans type
+                 déclencherait la soumission du formulaire. --}}
+            @if ($this->brouillon?->fichier_path)
+                <div class="flex justify-end" x-show="!apercuOuvert" x-cloak>
+                    <flux:button type="button" size="sm" variant="ghost" icon="eye" x-on:click="apercuOuvert = true">
+                        {{ __('Aperçu du document') }}
+                    </flux:button>
+                </div>
+            @endif
+
             {{-- ÉTAPE 1 — Document (scan / import) --}}
             <div x-show="etape === 1" x-cloak class="space-y-4 rounded-2xl border border-brand-border bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                 <div class="flex items-center gap-2">
@@ -234,52 +279,104 @@
                             {{ __('Certains champs (objet, destinataire, service, type de document, date, mode de réception, nom/organisation/téléphone/email/adresse de l\'expéditeur) ont été proposés automatiquement d\'après le texte détecté — vérifiez avant de confirmer.') }}
                         </flux:text>
                     @endif
-                @else
-                    {{-- Garde x-show/surveillanceActive : même précaution que
-                         scanPremier.blade.php — deux <input> liés au MÊME
-                         wire:model="document" (celui-ci + l'entrée cachée du
-                         watcher plus bas) peuvent se marcher dessus si les
-                         deux sont actionnables en même temps (voir son
-                         commentaire "celui qui committe en dernier écrase
-                         silencieusement l'autre"). Bouton distinct de
-                         l'input (pas wire:change sur l'input lui-même) :
-                         Livewire met en file l'upload puis l'appel serveur
-                         dans l'ordre, plutôt que de risquer une course sur
-                         le même évènement "change". --}}
-                    <div
-                        class="flex flex-wrap items-end gap-3"
-                        x-data="{ surveillanceActive: false }"
-                        x-on:scan-watcher-etat.window="surveillanceActive = ['chargement', 'en_surveillance'].includes($event.detail.etat)"
-                        x-show="!surveillanceActive"
-                    >
+                @endif
+
+                {{-- 2026-10-23 — autres documents scannés du même courrier
+                     (ex. la facture jointe à la lettre) : joints au courrier à
+                     l'enregistrement ; chacun peut devenir le document
+                     principal ou être retiré (il reste alors en attente). --}}
+                @if ($this->brouillonsSupplementaires->isNotEmpty())
+                    <div>
+                        <flux:text class="text-sm font-medium">{{ __('Autres documents de ce courrier') }}</flux:text>
+                        <ul class="mt-2 divide-y divide-brand-border rounded-lg border border-brand-border dark:divide-zinc-700 dark:border-zinc-700">
+                            @foreach ($this->brouillonsSupplementaires as $supplementaire)
+                                <li wire:key="document-supplementaire-{{ $supplementaire->id }}" class="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                                    <span class="flex min-w-0 items-center gap-2">
+                                        <flux:icon.paper-clip class="size-4 shrink-0 text-brand-text-secondary" />
+                                        <span class="truncate">{{ $supplementaire->nom_original }}</span>
+                                    </span>
+                                    <span class="flex shrink-0 items-center gap-1">
+                                        <flux:button size="xs" variant="ghost" wire:click="utiliserCommePrincipal({{ $supplementaire->id }})">{{ __('Document principal') }}</flux:button>
+                                        <flux:button size="xs" variant="ghost" icon="x-mark" wire:click="retirerBrouillon({{ $supplementaire->id }})" :aria-label="__('Retirer :nom', ['nom' => $supplementaire->nom_original])" />
+                                    </span>
+                                </li>
+                            @endforeach
+                        </ul>
+                        <flux:text class="mt-1 text-xs text-zinc-500">{{ __('Seul le document principal sert au pré-remplissage ; les autres sont joints au courrier.') }}</flux:text>
+                    </div>
+                @endif
+
+                {{-- Garde x-show/surveillanceActive : même précaution que
+                     scanPremier.blade.php — l'import manuel est masqué pendant
+                     que le watcher du dossier surveillé tourne (voir son
+                     commentaire "celui qui committe en dernier écrase
+                     silencieusement l'autre"). Bouton distinct de l'input
+                     (pas wire:change sur l'input lui-même) : Livewire met en
+                     file l'upload puis l'appel serveur dans l'ordre, plutôt
+                     que de risquer une course sur le même évènement "change".
+                     2026-10-23 — plusieurs fichiers à la fois, et toujours
+                     proposé une fois le document principal choisi (pour
+                     ajouter la facture à la lettre, par exemple). --}}
+                <div
+                    class="space-y-2"
+                    x-data="{ surveillanceActive: false }"
+                    x-on:scan-watcher-etat.window="surveillanceActive = ['chargement', 'en_surveillance'].includes($event.detail.etat)"
+                    x-show="!surveillanceActive"
+                >
+                    <flux:text class="text-sm font-medium">{{ $this->brouillon ? __('Ajouter d\'autres documents à ce courrier') : __('Importer un ou plusieurs fichiers') }}</flux:text>
+
+                    <div class="flex flex-wrap items-center gap-3">
                         {{-- Page cible gardée par courriers.numeriser (2026-09-23). --}}
-                        @can('numeriser', App\Models\Courrier::class)
-                            <flux:button type="button" variant="primary" icon="camera" :href="route('courriers.numeriser-nouveau')" wire:navigate>{{ __('Scanner') }}</flux:button>
-                        @endcan
+                        @if (! $this->brouillon)
+                            @can('numeriser', App\Models\Courrier::class)
+                                <flux:button type="button" variant="primary" icon="camera" :href="route('courriers.numeriser-nouveau')" wire:navigate>{{ __('Scanner') }}</flux:button>
+                            @endcan
+                        @endif
 
-                        <flux:input type="file" wire:model="document" :label="__('Importer un fichier')" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff" class="max-w-xs" />
+                        <input type="file" wire:model="documentsImportes" multiple accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff" aria-label="{{ __('Importer un ou plusieurs fichiers') }}"
+                            class="block w-full min-w-0 max-w-sm text-sm text-zinc-600 file:mr-4 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-4 file:py-2 file:text-sm file:font-medium hover:file:bg-zinc-200 dark:text-zinc-300 dark:file:bg-zinc-700 dark:hover:file:bg-zinc-600" />
 
-                        <flux:button type="button" variant="outline" wire:click="importerFichier" wire:loading.attr="disabled" wire:target="document,importerFichier">
+                        <flux:button type="button" variant="outline" wire:click="importerFichier" wire:loading.attr="disabled" wire:target="documentsImportes,importerFichier">
                             {{ __('Importer') }}
                         </flux:button>
                     </div>
 
-                    <flux:text class="text-sm text-zinc-500">{{ __('Formats acceptés : PDF, JPG, PNG | Taille max : 10 Mo') }}</flux:text>
+                    <flux:text class="text-sm text-zinc-500">
+                        {{ __('Formats acceptés : PDF, JPG, PNG | Taille max : 10 Mo') }}
+                        @unless ($this->brouillon)
+                            — {{ __('plusieurs fichiers possibles (ex. la lettre et la facture) : le premier sert au pré-remplissage, les autres sont joints au courrier.') }}
+                        @endunless
+                    </flux:text>
                     <div wire:loading wire:target="importerFichier" class="text-sm text-zinc-500">{{ __('Import en cours…') }}</div>
-                    <flux:error name="document" />
-                @endif
+                    <flux:error name="documentsImportes" />
+                </div>
 
                 @if ($this->brouillonsEnAttente->isNotEmpty())
                     @php $estAdministrateur = auth()->user()->hasPrivilege('brouillons.utiliser_tout'); @endphp
                     <flux:field>
-                        <flux:select x-on:change="if ($event.target.value) { Livewire.navigate($event.target.value); }">
-                            <flux:select.option value="">{{ __('— Choisir un autre document scanné en attente —') }}</flux:select.option>
-                            @foreach ($this->brouillonsEnAttente as $autre)
-                                <flux:select.option value="{{ route('courriers.nouveau', ['brouillonId' => $autre->id]) }}">
-                                    {{ $autre->nom_original }} ({{ str_replace('_', ' ', $autre->ocr_statut) }}){{ $estAdministrateur ? ' — '.$autre->creePar->name : '' }} — {{ $autre->created_at->diffForHumans() }}
-                                </flux:select.option>
-                            @endforeach
-                        </flux:select>
+                        {{-- Sans document principal : choisir le document à
+                             enregistrer (navigation, comme avant). Avec un
+                             document principal : le joindre au même courrier
+                             (2026-10-23). --}}
+                        @if ($this->brouillon)
+                            <flux:select x-on:change="if ($event.target.value) { $wire.joindreBrouillon(Number($event.target.value)); $event.target.value = ''; }">
+                                <flux:select.option value="">{{ __('— Joindre aussi un document scanné en attente —') }}</flux:select.option>
+                                @foreach ($this->brouillonsEnAttente as $autre)
+                                    <flux:select.option value="{{ $autre->id }}">
+                                        {{ $autre->nom_original }}{{ $estAdministrateur ? ' — '.$autre->creePar->name : '' }} — {{ $autre->created_at->diffForHumans() }}
+                                    </flux:select.option>
+                                @endforeach
+                            </flux:select>
+                        @else
+                            <flux:select x-on:change="if ($event.target.value) { window.dispatchEvent(new CustomEvent('chargement-document')); Livewire.navigate($event.target.value); }">
+                                <flux:select.option value="">{{ __('— Choisir un autre document scanné en attente —') }}</flux:select.option>
+                                @foreach ($this->brouillonsEnAttente as $autre)
+                                    <flux:select.option value="{{ route('courriers.nouveau', ['brouillonId' => $autre->id]) }}">
+                                        {{ $autre->nom_original }} ({{ str_replace('_', ' ', $autre->ocr_statut) }}){{ $estAdministrateur ? ' — '.$autre->creePar->name : '' }} — {{ $autre->created_at->diffForHumans() }}
+                                    </flux:select.option>
+                                @endforeach
+                            </flux:select>
+                        @endif
                         <div class="mt-2">{{ $this->brouillonsEnAttente->links() }}</div>
                     </flux:field>
                 @endif
@@ -315,6 +412,12 @@
 
                     <template x-if="etat === 'en_pause_erreur'">
                         <flux:text class="text-xs text-brand-warning" x-text="messageErreur"></flux:text>
+                    </template>
+
+                    {{-- 2026-11-09 — rangement sur ce poste des scans
+                         enregistrés : il faut l'autorisation d'écriture de Chrome. --}}
+                    <template x-if="rangement === 'a_autoriser'">
+                        <flux:button size="xs" variant="outline" icon="folder" x-on:click="autoriserRangement()">{{ __('Autoriser le rangement des scans') }}</flux:button>
                     </template>
                 </div>
 
@@ -358,24 +461,14 @@
 
                 <div class="grid gap-6 sm:grid-cols-2">
                     <flux:field>
-                        <flux:input type="date" wire:model="form.date_mouvement" :label="__('Date de réception / d\'envoi')" class:input="invalid:border-brand-danger valid:border-brand-success" required />
+                        <flux:input type="date" wire:model="form.date_mouvement" :label="__('Date de réception')" class:input="invalid:border-brand-danger valid:border-brand-success" required />
                     </flux:field>
 
-                    {{-- 2026-10-08 — privilège courriers.envoyer_direct_service
-                         (retour utilisateur, "make the agent start sending
-                         courier to the service concerné without passing
-                         throught the direction service") : un agent qui le
-                         possède peut désormais choisir lui-même le service
-                         d'un courrier ENTRANT aussi, pas seulement sortant —
-                         mais contrairement à sortant, ce choix reste
-                         OPTIONNEL ici (jamais "required") : s'il choisit un
-                         service, le courrier lui est envoyé directement (même
-                         mécanisme qu'un sinistre auto-classé, voir
-                         RegistrationForm::enregistrer()) ; s'il laisse vide,
-                         le circuit normal (validation DGA/ADJ DGA) reprend
-                         exactement comme avant pour qui n'a pas ce privilège. --}}
-                    @php $peutEnvoyerDirectService = $form->sens === 'entrant' && auth()->user()->hasPrivilege('courriers.envoyer_direct_service'); @endphp
-                    @if ($form->sens === 'sortant' || $peutEnvoyerDirectService)
+                    {{-- 2026-10-23 (voir DECISIONS.md "Transfert direct au service et
+                         acceptation") — seul un courrier SORTANT choisit son
+                         service ici ; un entrant est transféré au service après
+                         l'enregistrement, qui l'accepte ou le refuse. --}}
+                    @if ($form->sens === 'sortant')
                         <div class="grid gap-3 sm:col-span-2 sm:grid-cols-4">
                             {{-- Module "Organisation" v2 (2026-09-22, spec §16,
                                  niveau Direction ajouté le 2026-10-09) —
@@ -418,7 +511,9 @@
                                          entrant envoyé en direct, le Département
                                          reste volontairement optionnel (voir
                                          commentaire du privilège ci-dessus). --}}
-                                    <flux:select wire:model.live="departementSelectionneId" :label="__('Département')" placeholder="{{ __('Choisir un département') }}" :required="$form->sens === 'sortant'">
+                                    {{-- 2026-10-26 — services rattachés directement
+                                         à la Direction ou au Site inclus. --}}
+                                    <flux:select wire:model.live="departementSelectionneId" :label="__('Département / Service')" placeholder="{{ __('Choisir un département ou un service') }}" :required="$form->sens === 'sortant'">
                                         @foreach ($this->departementsDisponibles as $departement)
                                             <flux:select.option value="{{ $departement->id }}">{{ $departement->name }}</flux:select.option>
                                         @endforeach
@@ -427,8 +522,8 @@
                             @endif
                             @if ($departementSelectionneId && $this->unitesDisponibles->isNotEmpty())
                                 <flux:field>
-                                    <flux:select wire:model.live="uniteSelectionneeId" :label="__('Service / Unité')" placeholder="{{ __('— Aucun (le département reçoit directement) —') }}">
-                                        <flux:select.option value="">{{ __('— Aucun (le département reçoit directement) —') }}</flux:select.option>
+                                    <flux:select wire:model.live="uniteSelectionneeId" :label="__('Service / Unité')" placeholder="{{ __('— Aucun (le niveau au-dessus reçoit directement) —') }}">
+                                        <flux:select.option value="">{{ __('— Aucun (le niveau au-dessus reçoit directement) —') }}</flux:select.option>
                                         @foreach ($this->unitesDisponibles as $unite)
                                             <flux:select.option value="{{ $unite->id }}">{{ $unite->name }}</flux:select.option>
                                         @endforeach
@@ -437,14 +532,12 @@
                             @endif
                             @if ($champsProposesAutomatiquement && $form->service_id)
                                 <flux:description class="text-brand-warning sm:col-span-3">{{ __('Proposé automatiquement — à vérifier') }}</flux:description>
-                            @elseif ($peutEnvoyerDirectService)
-                                <flux:description class="sm:col-span-3">{{ __('Optionnel — si vous choisissez un service, ce courrier lui sera envoyé directement, sans passer par la validation DGA/ADJ DGA.') }}</flux:description>
                             @endif
                             @error('form.service_id') <flux:text class="text-sm text-brand-danger sm:col-span-3">{{ $message }}</flux:text> @enderror
                         </div>
                     @else
                         <flux:text class="self-end pb-2 text-sm text-zinc-500">
-                            {{ __('Le service sera choisi par le DGA/ADJ DGA au moment de valider le transfert.') }}
+                            {{ __('Le service sera choisi au moment du transfert, après l\'enregistrement (un sinistre lui est transféré automatiquement).') }}
                         </flux:text>
                     @endif
                 </div>
@@ -577,19 +670,17 @@
 
                 <flux:field>
                     <flux:label>
-                        {{ $this->brouillon ? __('Fichier supplémentaire (optionnel)') : __('Fichier (optionnel — copie déjà numérique, ex. pièce jointe d\'un email)') }}
+                        {{ $this->brouillon ? __('Fichiers supplémentaires (optionnel)') : __('Fichiers (optionnel — copies déjà numériques, ex. pièces jointes d\'un email)') }}
                     </flux:label>
-                    <input type="file" wire:model="pieceJointe" accept=".pdf,.jpg,.jpeg,.png"
-                        class="block w-full text-sm text-zinc-600 file:mr-4 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-4 file:py-2 file:text-sm file:font-medium hover:file:bg-zinc-200 dark:text-zinc-300 dark:file:bg-zinc-700 dark:hover:file:bg-zinc-600" />
                     <flux:description>
                         @if ($this->brouillon)
-                            {{ __('Le document scanné ci-dessus sera automatiquement rattaché comme document principal — inutile de le re-téléverser ici. Ce champ sert uniquement à joindre un fichier EN PLUS (ex. pièce d\'identité, justificatif).') }}
+                            {{ __('Le document scanné ci-dessus sera automatiquement rattaché comme document principal — inutile de le re-téléverser ici. Ajoutez ici les autres documents reçus EN PLUS (ex. une facture jointe à la lettre, une pièce d\'identité).') }}
                         @else
-                            {{ __('PDF, JPG ou PNG, 10 Mo maximum. Un courrier physique sans copie numérique sera numérisé au Module 2.') }}
+                            {{ __('Vous pouvez joindre plusieurs fichiers (ex. une facture et une lettre du même expéditeur), en une ou plusieurs fois. PDF, JPG ou PNG, 10 Mo chacun, 10 fichiers maximum.') }}
+                            {{ __('Un courrier physique sans copie numérique sera numérisé au Module 2.') }}
                         @endif
                     </flux:description>
-                    <flux:error name="pieceJointe" />
-                    <div wire:loading wire:target="pieceJointe" class="mt-1 text-sm text-zinc-500">{{ __('Envoi en cours…') }}</div>
+                    @include('partials.pieces-jointes-ajout')
                 </flux:field>
 
                 <flux:field>
@@ -654,10 +745,20 @@
                 @endif
             </div>
 
-            <div class="flex justify-start">
+            {{-- 2026-10-29 (« where can i see the mes courrier it should be a
+                 button at the bottom of the register courrier form ») — accès
+                 direct à « Mes courriers » (ses propres enregistrements, leurs
+                 transferts et leurs refus), même droit que la page
+                 (courriers.voir_mes_courriers). --}}
+            <div class="flex flex-wrap items-center gap-2">
                 <flux:button type="button" variant="ghost" :href="route('dashboard')" wire:navigate>
                     {{ __('Enregistrer et continuer plus tard') }}
                 </flux:button>
+                @can('voirMesCourriers', App\Models\Courrier::class)
+                    <flux:button variant="outline" icon="inbox-stack" :href="route('courriers.mes-courriers')" wire:navigate>
+                        {{ __('Mes courriers') }}
+                    </flux:button>
+                @endcan
             </div>
         </div>
 
@@ -688,28 +789,29 @@
              colonne, `sticky` peut décrocher avant la fin réelle du
              défilement — contrepartie du choix explicite de ne pas
              utiliser `position: fixed`. --}}
-        <div class="sticky top-20 self-start space-y-6">
-            @php
-                $estImageApercu = $this->brouillon?->fichier_path
-                    && in_array(strtolower(pathinfo($this->brouillon->fichier_path, PATHINFO_EXTENSION)), ['jpg', 'jpeg', 'png'], true);
-            @endphp
+        <div class="sticky top-20 self-start space-y-6" x-show="apercuOuvert">
             <div class="rounded-2xl border border-brand-border bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                 <div class="mb-3 flex items-center gap-2">
                     <flux:icon.information-circle class="size-4 text-brand-accent" />
                     <flux:heading level="3">{{ __('Aperçu du document') }}</flux:heading>
+                    {{-- Bouton "Fermer" du panneau latéral (2026-10-22) —
+                         masque le panneau (et rend sa place au formulaire,
+                         `lg:grid-cols-1`) ; le bouton de réouverture est en
+                         haut de la colonne de gauche. `type="button"` OBLIGATOIRE :
+                         ce <button> est dans le <form wire:submit="enregistrer">,
+                         sans type il soumettrait le formulaire au clic. --}}
+                    @if ($this->brouillon?->fichier_path)
+                        <flux:button type="button" size="sm" variant="ghost" icon="x-mark" class="ms-auto shrink-0" x-on:click="apercuOuvert = false">
+                            {{ __('Fermer') }}
+                        </flux:button>
+                    @endif
                 </div>
 
                 @if ($this->brouillon?->fichier_path)
-                    @php $telechargerUrlBrouillon = auth()->user()->can('telecharger', $this->brouillon) ? route('brouillons.telecharger', $this->brouillon) : null; @endphp
-                    @if ($estImageApercu)
-                        {{-- Barre d'outils réduite au téléchargement pour une
-                             image : le zoom/la recherche n'ont de sens que
-                             pour un PDF rendu sur canvas ci-dessous. --}}
-                        <div class="mb-2 flex justify-end">
-                            @can('telecharger', $this->brouillon) <flux:button size="sm" variant="ghost" icon="arrow-down-tray" :href="route('brouillons.telecharger', $this->brouillon)" :aria-label="__('Télécharger')" /> @endcan
-                        </div>
-                        <img src="{{ route('brouillons.apercu', $this->brouillon) }}" alt="{{ $this->brouillon->nom_original }}" class="h-74 w-full rounded-lg border border-brand-border object-contain dark:border-zinc-700">
-                    @else
+                    {{-- 2026-11-09 — aperçu sécurisé : PDF ou photo, le document
+                         s'affiche en pages images filigranées dans la même
+                         visionneuse (l'ancienne branche « image » affichait le
+                         fichier brut, enregistrable d'un clic droit). --}}
                         {{-- Barre d'outils intégrée directement au panneau
                              toujours visible (2026-09-17, maquette utilisateur
                              — "Tous les courriers") plutôt que masquée derrière
@@ -770,7 +872,7 @@
                             x-data="{
                                 erreur: null,
                                 zoom: 100,
-                                url: @js(route('brouillons.apercu', $this->brouillon)),
+                                url: @js(route('apercus.manifeste', ['brouillon', $this->brouillon->id])),
                                 pageActuelle: 1,
                                 numPages: 1,
                                 // obtenir(), pas creer() : cette instance vit
@@ -859,7 +961,6 @@
                                 variant="panneau"
                                 :nom-fichier="$this->brouillon->nom_original"
                                 agrandir-evenement="apercu-agrandi"
-                                :telecharger-url="$telechargerUrlBrouillon"
                             />
                             <x-apercu.visionneuse id="apercu-document" hauteur="h-74" />
                         </div>
@@ -885,7 +986,7 @@
                             x-data="{
                                 erreur: null,
                                 zoom: 100,
-                                url: @js(route('brouillons.apercu', $this->brouillon)),
+                                url: @js(route('apercus.manifeste', ['brouillon', $this->brouillon->id])),
                                 pageActuelle: 1,
                                 numPages: 1,
                                 instance() {
@@ -971,7 +1072,6 @@
                                     <x-apercu.barre-outils
                                         variant="modale"
                                         :nom-fichier="$this->brouillon->nom_original"
-                                        :telecharger-url="$telechargerUrlBrouillon"
                                         fermer-modale="apercu-agrandi"
                                     />
 
@@ -989,14 +1089,12 @@
                                                 :date="$form->date_mouvement"
                                                 :nom-fichier="$this->brouillon->nom_original"
                                                 :taille-fichier="$this->brouillon->taille"
-                                                :telecharger-url="$telechargerUrlBrouillon"
                                             />
                                         </div>
                                     </div>
                                 </div>
                             </flux:modal>
                         </div>
-                    @endif
                 @else
                     <div class="flex h-74 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-brand-border bg-brand-surface-soft text-center">
                         <flux:icon.document class="size-8 text-brand-text-muted" />

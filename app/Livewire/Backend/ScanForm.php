@@ -131,6 +131,9 @@ class ScanForm extends Component
         // (Règle n°1) ; voir DECISIONS.md "Stockage hybride".
         ReplicateFichierJob::dispatch($chemin)->onQueue('replication');
 
+        // 2026-11-09 — nouveau document : nouvelle empreinte et nouvel aperçu
+        // sécurisé (Courrier::booted()), même si le chemin est inchangé.
+        $courrier->documentRemplace = true;
         $courrier->update([
             'fichier_path' => $chemin,
             'ocr_statut' => 'en_cours',

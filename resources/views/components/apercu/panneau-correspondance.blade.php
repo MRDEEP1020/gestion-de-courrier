@@ -26,7 +26,6 @@
     'date' => null, // \Carbon\CarbonInterface|string|null
     'nomFichier' => null,
     'tailleFichier' => null, // octets, nullable
-    'telechargerUrl' => null,
 ])
 
 @php
@@ -86,9 +85,7 @@
                         <p class="text-[11px] text-[#616161] dark:text-zinc-500">{{ $tailleAffichee }}</p>
                     @endif
                 </div>
-                @if ($telechargerUrl)
-                    <flux:button size="xs" variant="ghost" icon="arrow-down-tray" :href="$telechargerUrl" :aria-label="__('Télécharger la pièce jointe')" />
-                @endif
+                {{-- Bouton « Télécharger » retiré le 2026-11-09 (aperçu sécurisé seulement). --}}
             </div>
         @endif
     </div>

@@ -32,10 +32,19 @@
     };
 @endphp
 
-<div @class([
-    'overflow-hidden rounded-b-lg border border-t-0 border-[#e1e1e1] bg-[#f0f0f0] dark:border-zinc-700 dark:bg-zinc-800',
-    'flex w-full flex-1 min-h-0 min-w-0 flex-col' => $grandir,
-])>
+{{-- 2026-11-09 — aperçu sécurisé (voir document-preview.js) : pages images
+     filigranées, `data-document-protege` masque la zone à l'impression
+     (app.css), texte non sélectionnable. `apercu-charge` : document arrivé
+     après coup (pages préparées en file d'attente), le x-data parent reçoit
+     son nombre de pages. --}}
+<div
+    data-document-protege
+    x-on:apercu-charge="numPages = $event.detail.numPages; pageActuelle = $event.detail.pageActuelle; erreur = null"
+    @class([
+        'select-none overflow-hidden rounded-b-lg border border-t-0 border-[#e1e1e1] bg-[#f0f0f0] dark:border-zinc-700 dark:bg-zinc-800',
+        'flex w-full flex-1 min-h-0 min-w-0 flex-col' => $grandir,
+    ])
+>
     {{-- `overflow-auto` INCONDITIONNEL — avant ce composant partagé, 7 des 8
          instances (tout sauf le panneau compact de registrationForm) avaient
          déjà ce comportement fixe, pas un `x-bind:class` selon le zoom ; un

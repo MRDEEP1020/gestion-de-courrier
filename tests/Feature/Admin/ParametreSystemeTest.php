@@ -3,10 +3,13 @@
 namespace Tests\Feature\Admin;
 
 use App\Livewire\Backend\ParametreSysteme;
+use App\Models\Courrier;
 use App\Models\ListeReference;
 use App\Models\Parametre;
 use App\Models\Privilege;
 use App\Models\Profil;
+use App\Models\Service;
+use App\Models\TransfertService;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
@@ -262,5 +265,131 @@ class ParametreSystemeTest extends TestCase
 
         $this->assertSame($ordreInitial + 1, $lettre->fresh()->ordre);
         $this->assertSame($ordreInitial, $suivant->fresh()->ordre);
+    }
+
+    // ===== Modèle de décharge (2026-10-28, « je veux qu'elle soit
+    // modifiable à partir de l'interface ») =====
+
+    private function rendreDecharge(): string
+    {
+        $courrier = new Courrier(['numero_reference' => 'GEC-2026-000099', 'sens' => 'entrant', 'date_mouvement' => now(), 'objet' => 'Objet test']);
+        $courrier->setRelation('piecesJointes', collect());
+        $transfert = new TransfertService(['numero_decharge' => 'ACC-2026-000099', 'statut' => TransfertService::ACCEPTE, 'decide_le' => now()]);
+        $transfert->setRelation('service', new Service(['nom' => 'Service Trésorerie']));
+        $transfert->setRelation('transferePar', new User(['name' => 'Awa Agent']));
+        $transfert->setRelation('decidePar', new User(['name' => 'Paul Responsable']));
+        $transfert->setRelation('originalRemisPar', null);
+
+        return view('pdf.decharge-remise', ['transfert' => $transfert, 'courrier' => $courrier, 'titreChef' => 'Responsable'])->render();
+    }
+
+    public function test_le_modele_de_decharge_se_modifie_et_simprime(): void
+    {
+        $this->actingAs($this->utilisateur('Administrateur'));
+
+        Livewire::test(ParametreSysteme::class)
+            ->assertSee(__('Modèle de décharge'))
+            ->set('modeleDecharge.ville', 'Yaoundé')
+            ->set('modeleDecharge.titre', 'DÉCHARGE DE REMISE')
+            ->set('modeleDecharge.formule', 'Moi, {recu_par} ({service}), atteste avoir reçu de {remis_par} le courrier {reference}. <b>pas de HTML</b>')
+            ->set('modeleDecharge.mention', '')
+            ->call('enregistrer')
+            ->assertHasNoErrors();
+
+        $this->assertSame('Yaoundé', Parametre::actuel()->modeleDecharge()['ville']);
+
+        $html = $this->rendreDecharge();
+        $this->assertStringContainsString('Yaoundé, le', $html);
+        $this->assertStringContainsString('<h1>DÉCHARGE DE REMISE</h1>', $html);
+        $this->assertStringContainsString('Moi, <strong>Paul Responsable</strong> (<strong>Service Trésorerie</strong>), atteste avoir reçu de <strong>Awa Agent</strong> le courrier <strong>GEC-2026-000099</strong>.', $html);
+        $this->assertStringContainsString('&lt;b&gt;pas de HTML&lt;/b&gt;', $html, 'le texte saisi est échappé');
+        $this->assertStringNotContainsString('servir et valoir', $html, 'une mention vidée disparaît du document');
+    }
+
+    public function test_un_champ_obligatoire_du_modele_ne_peut_pas_etre_vide(): void
+    {
+        $this->actingAs($this->utilisateur('Administrateur'));
+
+        Livewire::test(ParametreSysteme::class)
+            ->set('modeleDecharge.formule', '')
+            ->call('enregistrer')
+            ->assertHasErrors('modeleDecharge.formule');
+    }
+
+    public function test_retablir_le_modele_de_decharge_par_defaut(): void
+    {
+        $this->actingAs($this->utilisateur('Administrateur'));
+        Parametre::actuel()->update(['decharge_modele' => ['titre' => 'AUTRE TITRE'] + Parametre::modeleDechargeParDefaut()]);
+        Parametre::invaliderCache();
+
+        Livewire::test(ParametreSysteme::class)
+            ->assertSet('modeleDecharge.titre', 'AUTRE TITRE')
+            ->call('retablirModeleDecharge')
+            ->assertSet('modeleDecharge.titre', 'DÉCHARGE')
+            ->call('enregistrer');
+
+        $this->assertSame('DÉCHARGE', Parametre::actuel()->modeleDecharge()['titre']);
+    }
+
+    public function test_le_format_du_numero_de_decharge_se_regle_ici(): void
+    {
+        $this->actingAs($this->utilisateur('Administrateur'));
+
+        Livewire::test(ParametreSysteme::class)
+            ->set('dechargeNumeroPrefixe', 'dch')
+            ->set('dechargeNumeroChiffres', 4)
+            ->assertSee('DCH-'.now()->year.'-')
+            ->call('enregistrer')
+            ->assertHasNoErrors();
+
+        $parametres = Parametre::actuel();
+        $this->assertSame('DCH', $parametres->decharge_numero_prefixe);
+        $this->assertSame(sprintf('DCH-%d-0012', now()->year), $parametres->formaterNumeroDecharge(12));
+
+        Livewire::test(ParametreSysteme::class)
+            ->set('dechargeNumeroPrefixe', 'D-1')
+            ->call('enregistrer')
+            ->assertHasErrors('dechargeNumeroPrefixe');
+    }
+
+    // Erreur réelle (2026-10-28, « Property [$dechargeNumeroChiffres] not found
+    // on component ») : vider un champ « chiffres » (wire:model.live) faisait
+    // retirer la propriété entière par Livewire, puis l'aperçu plantait.
+    public function test_vider_un_champ_chiffres_ne_plante_pas_lapercu(): void
+    {
+        $this->actingAs($this->utilisateur('Administrateur'));
+
+        Livewire::test(ParametreSysteme::class)
+            ->set('dechargeNumeroChiffres', '')
+            ->set('numeroReferenceChiffresSequence', '')
+            ->assertOk()
+            ->assertSee('ACC-'.now()->year.'-')
+            ->call('enregistrer')
+            ->assertHasErrors(['dechargeNumeroChiffres', 'numeroReferenceChiffresSequence']);
+    }
+
+    public function test_vider_un_champ_numerique_donne_une_erreur_de_saisie(): void
+    {
+        $this->actingAs($this->utilisateur('Administrateur'));
+
+        Livewire::test(ParametreSysteme::class)
+            ->set('slaJoursDefaut', '')
+            ->set('ocrConfianceMinimale', '')
+            ->call('enregistrer')
+            ->assertHasErrors(['slaJoursDefaut', 'ocrConfianceMinimale']);
+    }
+
+    public function test_lapercu_du_modele_est_reserve_au_privilege_de_la_page(): void
+    {
+        $modele = ['modele' => ['titre' => 'APERÇU'] + Parametre::modeleDechargeParDefaut()];
+
+        $this->actingAs($this->utilisateur('Administrateur'))
+            ->post(route('admin.parametres.decharge.apercu'), $modele)
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
+
+        $this->actingAs($this->utilisateur('Agent'))
+            ->post(route('admin.parametres.decharge.apercu'), $modele)
+            ->assertForbidden();
     }
 }

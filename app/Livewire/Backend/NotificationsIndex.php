@@ -4,6 +4,8 @@ namespace App\Livewire\Backend;
 
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\View\View;
+use Livewire\Attributes\On;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 use Livewire\WithPagination;
@@ -43,7 +45,13 @@ class NotificationsIndex extends Component
         $this->dispatch('notifications-mises-a-jour');
     }
 
-    public function render(): \Illuminate\View\View
+    // 2026-10-27 — nouvelle notification reçue en direct (relayée par
+    // NotificationBell::notificationRecue()) : la liste se re-rend avec elle,
+    // sans recharger la page.
+    #[On('notifications-mises-a-jour')]
+    public function rafraichir(): void {}
+
+    public function render(): View
     {
         return view('livewire.frontend.notifications-index', [
             'notifications' => $this->paginer(),

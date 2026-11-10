@@ -221,7 +221,7 @@
                  grille 2x3 des 6 cartes KPI, plutôt qu'une 7ème cellule
                  étroite — mise en page distincte volontaire ("the delai
                  moyen card is the summary row"). --}}
-            <div class="col-span-full flex items-center justify-between gap-3 rounded-xl border border-brand-border bg-white p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+            <div class="col-span-full flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-xl border border-brand-border bg-white p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                 <div class="flex items-center gap-2.5">
                     <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-brand-accent-medium/10 text-brand-accent-medium">
                         <flux:icon.chart-bar class="size-4" />
@@ -255,25 +255,29 @@
             @if ($this->derniersCourriers->isEmpty())
                 <flux:text class="mt-4 text-zinc-500">{{ __('Aucun courrier pour l\'instant.') }}</flux:text>
             @else
-                <div x-data="squeletteMinimum()" class="mt-4 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                <div x-data="squeletteMinimum()" class="@container mt-4 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                     <div wire:loading.class.remove="hidden" x-ref="sentinelle" class="hidden" aria-hidden="true"></div>
                     <table class="w-full text-sm">
-                        {{-- 2026-10-12, retour utilisateur direct avec capture
-                             d'écran ("i want a disgue soft color") — repris
-                             spécifiquement sur CETTE table (pas les 9 autres
-                             neutralisées le même jour, scope confirmé par
-                             AskUserQuestion) : --color-brand-accent-soft
-                             (#F7FAFF), le token nommé "soft" du système de
-                             couleurs GEC, plutôt qu'une teinte inventée. --}}
-                        <thead class="bg-brand-accent-soft text-left text-sm font-medium text-zinc-600 dark:bg-zinc-800">
+                        {{-- Format de tableau commun (2026-10-29, « same format on all
+                             the tables of the project ») — celui de « Tous les
+                             courriers » (voir le commentaire de courrierList.blade.php) :
+                             l'en-tête n'a plus de fond (le fond « soft » demandé le
+                             2026-10-12 pour cette seule table est remplacé par le trait
+                             navy commun), lignes sur UNE seule ligne
+                             (« Sens » à côté du type, texte trop long coupé, lisible
+                             en entier au survol), 16 px en haut et en bas de chaque
+                             cellule. Carte étroite (< 44rem, ex. écran de 1366 px) :
+                             la colonne « Type » est masquée, « Date de réception »
+                             reste visible. --}}
+                        <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
                             <tr>
-                                <th class="py-3 pl-4 pr-3">{{ __('N° Référence') }}</th>
-                                <th class="py-3 pr-3">{{ __('Type') }}</th>
-                                <th class="py-3 pr-3">{{ __('Sens') }}</th>
-                                <th class="py-3 pr-3">{{ __('Expéditeur / Destinataire') }}</th>
-                                <th class="py-3 pr-3">{{ __('Objet') }}</th>
-                                <th class="py-3 pr-3">{{ __('Date') }}</th>
-                                <th class="py-3 pr-4">{{ __('Statut') }}</th>
+                                <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5 pl-4">{{ __('N° Référence') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5 @max-[44rem]:hidden">{{ __('Type') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Expéditeur') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5 @max-[60rem]:hidden">{{ __('Destinataire') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Objet') }}</th>
+                                <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Date de réception') }}</th>
+                                <th class="w-px py-3 pr-4">{{ __('Statut') }}</th>
                             </tr>
                         </thead>
                         {{-- Visibilité pilotée par l'état `visible` de
@@ -282,30 +286,45 @@
                              équivalent dans courrierList.blade.php
                              (2026-09-24). --}}
                         <tbody x-show="visible" x-cloak class="divide-y divide-zinc-200 dark:divide-zinc-700">
-                            <x-skeleton.table-rows :cols="7" :rows="5" />
+                            <x-skeleton.table-rows :cols="6" :rows="5" />
                         </tbody>
                         <tbody x-show="!visible" class="divide-y divide-zinc-200 dark:divide-zinc-700">
                             @foreach ($this->derniersCourriers as $courrier)
+                                @php
+                                    $typeLigne = $courrier->type_document.' · '.($courrier->sens === 'entrant' ? __('Entrant') : __('Sortant'));
+                                    $correspondantLigne = $courrier->sens === 'entrant'
+                                        ? ($courrier->expediteur_organisation ?: $courrier->expediteur_nom ?: __('—'))
+                                        : ($courrier->destinataire ?: __('—'));
+                                    $destinataireLigne = $courrier->destinataire ?: ($courrier->service?->nom ?? __('—'));
+                                @endphp
                                 <tr class="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800" onclick="window.location='{{ route('courriers.show', $courrier->id) }}'">
-                                    <td class="py-3 pl-4 pr-3 font-medium">
-                                        <flux:link :href="route('courriers.show', $courrier->id)" wire:navigate class="text-brand-accent">{{ $courrier->numero_reference }}</flux:link>
+                                    <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 pl-4 font-medium">
+                                        <span class="block max-w-36 truncate" title="{{ $courrier->numero_reference }}"><flux:link :href="route('courriers.show', $courrier->id)" wire:navigate class="text-brand-accent">{{ $courrier->numero_reference }}</flux:link></span>
                                     </td>
-                                    <td class="py-3 pr-3 text-zinc-500">{{ $courrier->type_document }}</td>
-                                    <td class="py-3 pr-3 text-zinc-500">{{ $courrier->sens === 'entrant' ? __('Entrant') : __('Sortant') }}</td>
-                                    <td class="py-3 pr-3 text-zinc-500">
-                                        {{ $courrier->sens === 'entrant'
-                                            ? ($courrier->expediteur_organisation ?: $courrier->expediteur_nom ?: __('—'))
-                                            : ($courrier->destinataire ?: __('—')) }}
+                                    <td class="w-[20%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:hidden">
+                                        <div class="w-0 min-w-full truncate" title="{{ $typeLigne }}">{{ $typeLigne }}</div>
                                     </td>
-                                    <td class="py-3 pr-3">{{ $courrier->objet }}</td>
-                                    <td class="py-3 pr-3 text-zinc-500">{{ $courrier->date_mouvement->format('d/m/Y') }}</td>
-                                    <td class="py-3 pr-4">
+                                    <td class="w-[30%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:w-[38%]">
+                                        <div class="w-0 min-w-full truncate" title="{{ $correspondantLigne }}">{{ $correspondantLigne }}</div>
+                                    </td>
+                                    <td class="w-[30%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:w-[38%]">
+                                        <div class="w-0 min-w-full truncate" title="{{ $destinataireLigne }}">{{ $destinataireLigne }}</div>
+                                    </td>
+                                    <td class="w-[50%] min-w-24 py-4 pr-3 @min-[60rem]:pr-5 @max-[44rem]:w-[62%]">
+                                        <div class="w-0 min-w-full truncate" title="{{ $courrier->objet }}">{{ $courrier->objet }}</div>
+                                    </td>
+                                    <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">{{ $courrier->date_mouvement->format('d/m/Y') }}</td>
+                                    <td class="py-4 pr-4">
                                         {{-- Chronomètre à côté du statut (2026-09-28, "when the
-                                             date is comming soon the colours should change") —
-                                             empilé sur 2 lignes (2026-10-02, positionnement revu) ;
+                                             date is comming soon the colours should change") ;
                                              compte à rebours masqué ici aussi (2026-10-02, "remove on
-                                             the dashboard too"), ne garde que les badges d'état. --}}
-                                        <x-statut-avec-echeance :courrier="$courrier" :masquer-temps="true" />
+                                             the dashboard too"), ne garde que les badges d'état.
+                                             2026-10-29 — sur la même ligne que le statut, comme
+                                             « Tous les courriers ». --}}
+                                        <div class="flex items-center gap-1 whitespace-nowrap @max-[44rem]:flex-col @max-[44rem]:items-start">
+                                            <x-statut-badge :statut="$courrier->statut" class="rounded-md! px-2! font-semibold!" />
+                                            <x-chronometre :courrier="$courrier" :masquer-temps="true" />
+                                        </div>
                                     </td>
                                 </tr>
                             @endforeach
@@ -361,7 +380,7 @@
                                 @php
                                     $action = match ($courrier->statut) {
                                         'en_attente_de_transfert' => __('À transférer'),
-                                        'en_cours_de_transfert' => __('Service à confirmer'),
+                                        'en_cours_de_transfert' => __('À accepter'),
                                         'enregistre' => __('À affecter'),
                                         'affecte' => __('À démarrer'),
                                         'en_traitement' => __('À traiter'),

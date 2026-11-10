@@ -2,8 +2,10 @@
 
 namespace App\Notifications;
 
+use App\Concerns\NotificationTempsReel;
 use App\Models\OrganizationUnit;
 use App\Models\User;
+use App\Services\NotificationPreferenceService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -15,7 +17,7 @@ use Illuminate\Notifications\Notification;
 // jusqu'ici que s'il consultait lui-même la page Organisation.
 class OrganisationRattachementNotification extends Notification implements ShouldQueue
 {
-    use Queueable;
+    use NotificationTempsReel, Queueable;
 
     public function __construct(
         public OrganizationUnit $unite,
@@ -29,7 +31,7 @@ class OrganisationRattachementNotification extends Notification implements Shoul
 
     public function via(object $notifiable): array
     {
-        return ['mail', 'database'];
+        return app(NotificationPreferenceService::class)->canaux($notifiable, 'organisation');
     }
 
     private function libelle(): string

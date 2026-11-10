@@ -8,7 +8,6 @@ use App\Livewire\Backend\ShowCourrier;
 use App\Models\Affectation;
 use App\Models\Courrier;
 use App\Models\CourrierHistorique;
-use App\Models\DelegationDga;
 use App\Models\OrganizationUnit;
 use App\Models\Privilege;
 use App\Models\Profil;
@@ -17,7 +16,9 @@ use App\Models\User;
 use App\Notifications\CourrierNotification;
 use App\Services\WorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Notifications\SendQueuedNotifications;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Queue;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -70,38 +71,41 @@ class CircuitCourrierTest extends TestCase
     // lui-même (ShowCourrier::collaborateursDuService(), n'incluait avant
     // que le profil "Collaborateur") ; (2) avec le privilège accordé, il
     // peut ensuite réellement démarrer le traitement.
-    public function test_un_responsable_avec_le_privilege_peut_sauto_affecter_et_traiter(): void
+    // 2026-10-29 (« remove responsable from that list of collaborateur ») —
+    // le point (1) passe désormais par « Me l'affecter et commencer » (voir
+    // le test suivant) : la liste ne montre plus que les collaborateurs, et
+    // l'identifiant du responsable posté à la main est refusé (Règle n°6).
+    public function test_le_responsable_nest_plus_dans_la_liste_des_collaborateurs(): void
     {
         $responsable = $this->utilisateur('Responsable de service');
         Privilege::where('cle', 'courriers.traiter_affecte')->firstOrFail()->users()->attach($responsable->id);
         $service = Service::factory()->create(['responsable_id' => $responsable->id, 'code' => 'TST']);
         $responsable->update(['service_id' => $service->id]);
         $responsable = User::find($responsable->id);
+        $collaborateur = User::factory()->create([
+            'profil_id' => Profil::firstOrCreate(['nom' => 'Collaborateur'])->id,
+            'service_id' => $service->id,
+        ]);
         $courrier = $this->courrier($service);
         $this->actingAs($responsable);
 
         $test = Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id]);
 
-        $this->assertTrue(
-            $test->get('collaborateursDuService')->pluck('id')->contains($responsable->id),
-            'Le responsable devrait apparaître dans la liste des collaborateurs sélectionnables.'
-        );
+        $this->assertSame([$collaborateur->id], $test->get('collaborateursDuService')->pluck('id')->all());
 
         $test->set('collaborateurSelectionne', $responsable->id)
             ->call('affecter')
-            ->assertHasNoErrors()
-            ->call('demarrerTraitement')
-            ->assertHasNoErrors();
+            ->assertHasErrors('collaborateurSelectionne');
 
-        $this->assertSame('en_traitement', $courrier->fresh()->statut);
+        $this->assertSame('enregistre', $courrier->fresh()->statut);
     }
 
-    // Filet de sécurité (Règle n°6) — sans le privilège, même auto-affecté,
-    // le responsable reste bloqué côté serveur, pas seulement caché dans la
-    // vue. courriers.traiter_affecte est un défaut du profil depuis le
-    // 2026-10-13 (voir PrivilegeSeeder) — retiré explicitement ici pour
-    // tester vraiment le cas "sans le privilège".
-    public function test_un_responsable_sans_le_privilege_ne_peut_pas_traiter_meme_sil_sest_affecte(): void
+    // Filet de sécurité (Règle n°6) — sans le privilège, le responsable ne
+    // peut pas s'affecter le courrier : ni « Me l'affecter et commencer »,
+    // ni son identifiant posté à la main. courriers.traiter_affecte est un
+    // défaut du profil depuis le 2026-10-13 (voir PrivilegeSeeder) — retiré
+    // explicitement ici pour tester vraiment le cas "sans le privilège".
+    public function test_un_responsable_sans_le_privilege_ne_peut_pas_saffecter_le_courrier(): void
     {
         $responsable = $this->utilisateur('Responsable de service');
         Privilege::where('cle', 'courriers.traiter_affecte')->firstOrFail()->profils()->detach($responsable->profil_id);
@@ -112,13 +116,13 @@ class CircuitCourrierTest extends TestCase
         $this->actingAs($responsable);
 
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->assertSet('peutTraiterMoiMeme', false)
+            ->assertDontSee(__('Me l\'affecter et commencer'))
             ->set('collaborateurSelectionne', $responsable->id)
             ->call('affecter')
-            ->assertHasNoErrors()
-            ->call('demarrerTraitement')
-            ->assertForbidden();
+            ->assertHasErrors('collaborateurSelectionne');
 
-        $this->assertSame('affecte', $courrier->fresh()->statut);
+        $this->assertSame('enregistre', $courrier->fresh()->statut);
     }
 
     // 2026-10-13, demande explicite de l'utilisateur ("isnt the another way
@@ -136,17 +140,18 @@ class CircuitCourrierTest extends TestCase
         $this->actingAs($responsable);
 
         // 2026-10-13, retour utilisateur ("je ne peut pa mettre un
-        // delais") — passe désormais par ouvrirTraiterMoiMeme() (ouvre une
-        // modale avec son propre délai, préempli au SLA par défaut) avant
-        // de confirmer, plutôt qu'une action directe sans aucun champ délai.
+        // delais") — délai préempli au SLA par défaut. 2026-10-29 (« Un seul
+        // bouton Affecter ») : plus de bouton ni de modale à part, c'est le
+        // choix « Me l'affecter et commencer » de la modale « Affecter ».
         $test = Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
             ->assertSet('peutTraiterMoiMeme', true)
-            ->call('ouvrirTraiterMoiMeme');
+            ->assertSee(__('Me l\'affecter et commencer'))
+            ->assertDontSee(__('Traiter moi-même'));
 
         $this->assertNotNull($test->get('delaiValeur'));
         $this->assertSame('jours', $test->get('delaiUnite'));
 
-        $test->call('traiterMoiMeme')->assertHasNoErrors();
+        $test->set('modeAffectation', 'moi')->call('affecter')->assertHasNoErrors();
 
         $courrier->refresh();
         $this->assertSame('en_traitement', $courrier->statut);
@@ -170,9 +175,13 @@ class CircuitCourrierTest extends TestCase
     // "Collaborateur", jamais "Responsable de service" malgré
     // courriers.traiter_affecte déjà accordé — un responsable qui se traite
     // lui-même un courrier a besoin des DEUX privilèges "côté collaborateur"
-    // pour aller jusqu'au bout du cycle, pas seulement du premier. Couvre
-    // le cycle complet : démarrer → soumettre → (se) valider.
-    public function test_un_responsable_peut_aller_jusquau_bout_du_cycle_sur_son_propre_courrier(): void
+    // pour aller jusqu'au bout du cycle, pas seulement du premier.
+    // 2026-10-29 (« retire Réaffecter, Rejeter ce courrier et Soumettre
+    // pour validation quand c'est responsable et directeur », précisé :
+    // quand il traite lui-même) — le chef qui s'est affecté le courrier ne
+    // voit plus que « Valider directement » (CourrierPolicy::traiteLuiMeme()) ;
+    // les trois actions retirées sont aussi refusées côté serveur.
+    public function test_un_responsable_qui_traite_lui_meme_ne_fait_que_valider_directement(): void
     {
         $responsable = $this->utilisateur('Responsable de service');
         $service = Service::factory()->create(['responsable_id' => $responsable->id, 'code' => 'TST']);
@@ -181,22 +190,121 @@ class CircuitCourrierTest extends TestCase
         $courrier = $this->courrier($service);
         $this->actingAs($responsable);
 
-        $test = Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
             ->call('traiterMoiMeme')
             ->assertHasNoErrors();
 
+        $courrier->refresh();
+        $this->assertSame('en_traitement', $courrier->statut);
+        $this->assertFalse($responsable->can('soumettreValidation', $courrier));
+        $this->assertFalse($responsable->can('reaffecter', $courrier));
+        $this->assertFalse($responsable->can('rejeter', $courrier));
+        $this->assertTrue($responsable->can('mettreEnAttente', $courrier));
+
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->assertSee(__('Valider directement'))
+            ->assertSee(__('Mettre en attente'))
+            ->assertDontSee(__('Soumettre pour validation'))
+            ->assertDontSee(__('Réaffecter'))
+            ->assertDontSee(__('Rejeter'))
+            // 2026-10-30 — « Responsable » au lieu de « Collaborateur assigné ».
+            ->assertDontSee(__('Collaborateur assigné'))
+            ->assertSeeInOrder([__('Responsable'), $responsable->name]);
+
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->call('soumettrePourValidation')
+            ->assertForbidden();
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->set('motifRejet', 'Pas pour notre service')
+            ->call('rejeter')
+            ->assertForbidden();
+
         $this->assertSame('en_traitement', $courrier->fresh()->statut);
 
-        $this->assertTrue($test->get('droits')['soumettreValidation']);
-
-        $test->call('soumettrePourValidation')
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->call('validerDirectement')
             ->assertHasNoErrors();
 
-        $this->assertSame('en_validation', $courrier->fresh()->statut);
+        $this->assertSame('traite', $courrier->fresh()->statut);
+    }
 
-        $test->call('valider')->assertHasNoErrors();
+    // 2026-10-30 (« if it is the responsible doing the traitement some of the
+    // workflow process should not send notif ») — jamais notifié de ses
+    // propres actions : ni « affecté », ni « soumis pour validation », ni
+    // « validé » quand il s'affecte, traite et valide lui-même.
+    public function test_le_responsable_qui_traite_lui_meme_nest_pas_notifie_de_ses_propres_actions(): void
+    {
+        Notification::fake();
+        $responsable = $this->utilisateur('Responsable de service');
+        $service = Service::factory()->create(['responsable_id' => $responsable->id, 'code' => 'TST']);
+        $responsable->update(['service_id' => $service->id]);
+        $responsable = User::find($responsable->id);
+        $courrier = $this->courrier($service);
+        $this->actingAs($responsable);
+
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->set('modeAffectation', 'moi')
+            ->call('affecter')
+            ->assertHasNoErrors();
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->call('validerDirectement')
+            ->assertHasNoErrors();
 
         $this->assertSame('traite', $courrier->fresh()->statut);
+        Notification::assertNotSentTo($responsable, CourrierNotification::class);
+    }
+
+    // 2026-10-30 (« since it is the responsable doing the traitement … is
+    // this circuit good representing it ») — parcours à 5 étapes quand le
+    // chef traite lui-même : « Prise en charge par le responsable », pas de
+    // « Réponse » ; 6 étapes inchangées pour un collaborateur.
+    public function test_le_parcours_sadapte_quand_le_responsable_traite_lui_meme(): void
+    {
+        $responsable = $this->utilisateur('Responsable de service');
+        $service = Service::factory()->create(['responsable_id' => $responsable->id, 'code' => 'RSP']);
+        $responsable->update(['service_id' => $service->id]);
+        $responsable = User::find($responsable->id);
+        $courrier = $this->courrier($service);
+        $this->actingAs($responsable);
+
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->set('modeAffectation', 'moi')
+            ->call('affecter')
+            ->assertHasNoErrors();
+
+        $etapes = collect(Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])->get('etapesParcours'));
+
+        $this->assertSame(['Création', 'Transfert', 'Prise en charge', 'Traitement', 'Clôture'], $etapes->pluck('libelle')->all());
+        $this->assertSame('par le responsable', $etapes->firstWhere('statut', 'affecte')['precision']);
+        $this->assertTrue($etapes->firstWhere('statut', 'en_traitement')['courante']);
+
+        [$autreResponsable, , $courrierCollaborateur] = $this->courrierEnTraitementChezUnCollaborateur();
+        $this->actingAs($autreResponsable);
+        $etapesCollaborateur = collect(Livewire::test(ShowCourrier::class, ['courrierId' => $courrierCollaborateur->id])->get('etapesParcours'));
+
+        $this->assertSame(['Création', 'Transfert', 'Affectation', 'Traitement', 'Réponse', 'Clôture'], $etapesCollaborateur->pluck('libelle')->all());
+    }
+
+    // Cas nominal inchangé : quand un collaborateur traite le courrier, le
+    // responsable garde « Réaffecter » et « Rejeter ».
+    public function test_le_responsable_garde_reaffecter_et_rejeter_quand_un_collaborateur_traite(): void
+    {
+        $responsable = $this->utilisateur('Responsable de service');
+        $service = Service::factory()->create(['responsable_id' => $responsable->id, 'code' => 'TST']);
+        $responsable->update(['service_id' => $service->id]);
+        $responsable = User::find($responsable->id);
+        $collaborateur = $this->utilisateur('Collaborateur', $service);
+        $courrier = $this->courrier($service)->fresh();
+        $workflow = app(WorkflowService::class);
+        $workflow->affecter($courrier, $collaborateur, $responsable);
+        $workflow->demarrerTraitement($courrier->fresh(), $collaborateur);
+        $this->actingAs($responsable);
+
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->assertSee(__('Réaffecter'))
+            ->assertSee(__('Rejeter'))
+            ->assertDontSee(__('Valider directement'))
+            ->assertSeeInOrder([__('Collaborateur assigné'), $collaborateur->name]);
     }
 
     // 2026-10-14, retour utilisateur ("why can he validate directly") —
@@ -297,146 +405,73 @@ class CircuitCourrierTest extends TestCase
         $this->assertSame(1, CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'affectation')->count());
     }
 
-    // Module 1/4 — validation DGA/ADJ du service, demande explicite de
-    // l'utilisateur (2026-09-08) : voir DECISIONS.md "Circuit courrier
-    // entrant : validation DGA/ADJ".
-
-    public function test_une_dga_valide_le_service_dun_courrier(): void
+    // Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au service
+    // et acceptation") — l'accueil transfère au service par la cascade
+    // Organisation (plus de validation DGA). Courrier créé par $agent, en
+    // attente de transfert, sans service.
+    private function courrierATransfererPar(User $agent, array $attributs = []): Courrier
     {
-        $dga = $this->utilisateur('DGA');
-        $serviceInitial = Service::factory()->create(['code' => 'TST']);
-        $serviceRetenu = Service::factory()->create(['code' => 'AUT']);
-        $departement = $this->departementPonte($serviceRetenu);
-        // 'en_cours_de_transfert' (2026-09-15, voir DECISIONS.md,
-        // synchronisation SRS-GEC.pdf) : validerService() n'est plus
-        // atteignable qu'après que la réceptionniste ait cliqué "Transférer".
-        $courrier = $this->courrier($serviceInitial, ['statut' => 'en_cours_de_transfert']);
-        $this->actingAs($dga);
+        $courrier = $this->courrier(Service::factory()->create(['code' => 'INI']), array_merge(['statut' => 'en_attente_de_transfert', 'service_id' => null], $attributs));
+        CourrierHistorique::create(['courrier_id' => $courrier->id, 'auteur_id' => $agent->id, 'action' => 'creation']);
 
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
-            ->set('siteSelectionneId', $departement->parent_id)
-            ->set('departementSelectionneId', $departement->id)
-            ->call('validerService')
-            ->assertHasNoErrors();
+        return $courrier;
+    }
 
-        $courrier->refresh();
-
-        $this->assertSame('enregistre', $courrier->statut);
-        $this->assertSame($serviceRetenu->id, $courrier->service_id);
-        $this->assertSame(1, CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'service_valide_dga')->count());
+    private function serviceAvecResponsable(string $code): Service
+    {
+        return Service::factory()->create(['code' => $code, 'responsable_id' => $this->utilisateur('Responsable de service')->id]);
     }
 
     // 2026-09-23, clarification explicite de l'utilisateur (cas réel
     // rencontré : "Direction des Sinistres" créée en base SANS Site
-    // au-dessus, faute de nom de site réel confirmé — "leave the site
-    // unassigned/null for now") : un Département RACINE (parent_id null)
-    // doit rester sélectionnable/utilisable pour valider un service, sans
-    // qu'un Site soit choisi au préalable.
-    public function test_une_dga_valide_le_service_via_un_departement_racine_sans_site(): void
+    // au-dessus) : un Département RACINE (parent_id null) reste
+    // sélectionnable pour transférer, sans qu'un Site soit choisi.
+    public function test_lagent_transfere_via_un_departement_racine_sans_site(): void
     {
-        $dga = $this->utilisateur('DGA');
-        $serviceInitial = Service::factory()->create(['code' => 'TST']);
-        $serviceRetenu = Service::factory()->create(['code' => 'AUT']);
+        $agent = $this->utilisateur('Agent');
+        $serviceRetenu = $this->serviceAvecResponsable('AUT');
         $departementRacine = OrganizationUnit::factory()->create([
             'type' => OrganizationUnit::TYPE_DEPARTMENT,
             'parent_id' => null,
             'service_id' => $serviceRetenu->id,
         ]);
-        $courrier = $this->courrier($serviceInitial, ['statut' => 'en_cours_de_transfert']);
-        $this->actingAs($dga);
+        $courrier = $this->courrierATransfererPar($agent);
+        $this->actingAs($agent);
 
         $composant = Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
             ->assertSet('siteSelectionneId', null)
-            ->call('validerService')
+            ->call('transferer')
             ->assertHasErrors('uniteSelectionneeId');
 
         $this->assertTrue(collect($composant->get('departementsDisponibles'))->pluck('id')->contains($departementRacine->id));
 
         $composant
             ->set('departementSelectionneId', $departementRacine->id)
-            ->call('validerService')
+            ->call('transferer')
             ->assertHasNoErrors();
 
-        $this->assertSame($serviceRetenu->id, $courrier->refresh()->service_id);
+        $courrier->refresh();
+        $this->assertSame('en_cours_de_transfert', $courrier->statut);
+        $this->assertSame($serviceRetenu->id, $courrier->service_id);
     }
 
-    // 2026-09-21 — demande explicite de l'utilisateur : la DGA confirme/
-    // corrige le niveau de confidentialité RÉEL en même temps que le
-    // service (voir WorkflowService::validerService()).
-    public function test_le_niveau_de_confidentialite_de_la_receptionniste_est_presilectionne_et_modifiable_par_la_dga(): void
+    // Présélection RÉELLE de la proposition de classement dans la cascade
+    // (pas seulement la prétention d'un commentaire), comme pour l'affectation.
+    public function test_le_service_propose_est_preselectionne_pour_le_transfert(): void
     {
-        // niveau_confidentialite explicite (2026-09-21, correction de
-        // l'utilisateur — "the dga profile will have ... niveau elevated") :
-        // un compte DGA correctement configuré a un niveau élevé, ce n'est
-        // plus une exception cachée du code (voir User::niveauConfidentialiteEffectif()).
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id, 'niveau_confidentialite' => 3]);
-        $service = Service::factory()->create(['code' => 'TST']);
-        $departement = $this->departementPonte($service);
-        $courrier = $this->courrier($service, ['statut' => 'en_cours_de_transfert', 'confidentialite' => 2]);
-        $this->actingAs($dga);
-
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
-            ->assertSet('confidentialiteSelectionnee', 2)
-            ->set('siteSelectionneId', $departement->parent_id)
-            ->set('departementSelectionneId', $departement->id)
-            ->set('confidentialiteSelectionnee', 3)
-            ->call('validerService')
-            ->assertHasNoErrors();
-
-        $this->assertSame(3, $courrier->refresh()->confidentialite);
-    }
-
-    public function test_le_service_propose_est_preselectionne_pour_la_validation_dga(): void
-    {
-        // Même principe que le_moins_charge_est_preselectionne... ci-dessous
-        // pour l'affectation : présélection RÉELLE, pas seulement la
-        // prétention d'un commentaire. Module "Organisation" v2 — la
-        // présélection reconstruit la cascade Site/Département depuis le
-        // nœud ponté au service proposé (voir
-        // ShowCourrier::preselectionnerCascadeDepuisService()).
-        $dga = $this->utilisateur('DGA');
-        $serviceInitial = Service::factory()->create(['code' => 'TST']);
-        $serviceHumainePropose = Service::factory()->create(['code' => 'AUT']);
-        $departement = $this->departementPonte($serviceHumainePropose);
-        $courrier = $this->courrier($serviceInitial, [
-            'statut' => 'en_cours_de_transfert',
-            'service_propose_id' => $serviceHumainePropose->id,
-        ]);
-        $this->actingAs($dga);
+        $agent = $this->utilisateur('Agent');
+        $servicePropose = $this->serviceAvecResponsable('AUT');
+        $departement = $this->departementPonte($servicePropose);
+        $courrier = $this->courrierATransfererPar($agent, ['service_propose_id' => $servicePropose->id]);
+        $this->actingAs($agent);
 
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
             ->assertSet('siteSelectionneId', $departement->parent_id)
             ->assertSet('departementSelectionneId', $departement->id)
-            ->call('validerService')
+            ->call('transferer')
             ->assertHasNoErrors();
 
-        $this->assertSame($serviceHumainePropose->id, $courrier->refresh()->service_id);
-    }
-
-    // Bug réel constaté le 2026-09-23 : après une validation RÉUSSIE, la DGA
-    // perdait le droit de consulter le courrier et le re-rendu affichait une
-    // page 403. Depuis le 2026-09-24 ("dga doesn't see all the courier he
-    // transfered"), elle GARDE la consultation (privilège voir_transferes) :
-    // elle reste sur la fiche, sans plus aucune action possible dessus.
-    public function test_apres_validation_la_dga_garde_la_consultation_sans_pouvoir_agir(): void
-    {
-        $dga = $this->utilisateur('DGA');
-        $service = Service::factory()->create(['code' => 'TST']);
-        $departement = $this->departementPonte($service);
-        $courrier = $this->courrier($service, ['statut' => 'en_cours_de_transfert', 'service_id' => null]);
-        $this->actingAs($dga);
-
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
-            ->set('siteSelectionneId', $departement->parent_id)
-            ->set('departementSelectionneId', $departement->id)
-            ->call('validerService')
-            ->assertHasNoErrors()
-            ->assertNoRedirect()
-            ->assertSet('peutValiderService', false)
-            ->assertSet('peutAffecter', false);
-
-        $this->assertSame($service->id, $courrier->refresh()->service_id);
-        $this->get(route('courriers.show', $courrier->id))->assertOk();
+        $this->assertSame($servicePropose->id, $courrier->refresh()->service_id);
     }
 
     // 2026-09-24 — les courriers transférés restent dans les listes de la
@@ -444,8 +479,8 @@ class CircuitCourrierTest extends TestCase
     // traiter" : ils ne l'attendent plus.
     public function test_la_dga_retrouve_ses_courriers_transferes_hors_de_sa_file_a_traiter(): void
     {
-        $dga = $this->utilisateur('DGA');
-        $autreDga = $this->utilisateur('DGA');
+        $dga = $this->utilisateur('DG');
+        $autreDga = $this->utilisateur('DG');
         $service = Service::factory()->create(['code' => 'TST']);
         $transfere = $this->courrier($service, ['statut' => 'affecte', 'destinataire_transfert_id' => $dga->id, 'numero_reference' => 'GEC-2026-000201']);
         $ancienSansDestinataire = $this->courrier($service, ['statut' => 'enregistre', 'numero_reference' => 'GEC-2026-000202']);
@@ -474,7 +509,7 @@ class CircuitCourrierTest extends TestCase
     // perdait dès l'affectation.
     public function test_la_dga_suit_ses_courriers_transferes_a_chaque_etape(): void
     {
-        $dga = $this->utilisateur('DGA');
+        $dga = $this->utilisateur('DG');
         $responsable = $this->utilisateur('Responsable de service');
         $service = Service::factory()->create(['code' => 'TST', 'responsable_id' => $responsable->id]);
         $collaborateur = $this->utilisateur('Collaborateur', $service);
@@ -497,214 +532,43 @@ class CircuitCourrierTest extends TestCase
         $this->assertFalse($dga->can('affecter', $courrier->fresh()));
     }
 
-    // Bug réel constaté le 2026-09-23 : courrier validé vers "Sinistre Santé"
+    // Bug réel constaté le 2026-09-23 : courrier envoyé vers "Sinistre Santé"
     // (unité d'un AUTRE département, restée en mémoire) alors que l'écran
     // affichait "Departement Informatique".
     public function test_une_unite_perimee_dun_autre_departement_est_refusee(): void
     {
-        $dga = $this->utilisateur('DGA');
-        $serviceSinistres = Service::factory()->create(['code' => 'SIN']);
-        $serviceSante = Service::factory()->create(['code' => 'SAN']);
-        $serviceInfo = Service::factory()->create(['code' => 'INF']);
+        $agent = $this->utilisateur('Agent');
+        $serviceSinistres = $this->serviceAvecResponsable('SIN');
+        $serviceSante = $this->serviceAvecResponsable('SAN');
+        $serviceInfo = $this->serviceAvecResponsable('INF');
         $sinistres = OrganizationUnit::factory()->create(['type' => OrganizationUnit::TYPE_DEPARTMENT, 'parent_id' => null, 'service_id' => $serviceSinistres->id]);
         $sante = OrganizationUnit::factory()->create(['type' => OrganizationUnit::TYPE_SERVICE, 'parent_id' => $sinistres->id, 'service_id' => $serviceSante->id]);
         $info = OrganizationUnit::factory()->create(['type' => OrganizationUnit::TYPE_DEPARTMENT, 'parent_id' => null, 'service_id' => $serviceInfo->id]);
-        $courrier = $this->courrier($serviceInfo, ['statut' => 'en_cours_de_transfert', 'service_id' => null]);
-        $this->actingAs($dga);
+        $courrier = $this->courrierATransfererPar($agent);
+        $this->actingAs($agent);
 
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
             ->set('departementSelectionneId', $info->id)
             ->set('uniteSelectionneeId', $sante->id)
-            ->call('validerService')
+            ->call('transferer')
             ->assertHasErrors('uniteSelectionneeId')
             ->assertSet('uniteSelectionneeId', null);
 
-        $this->assertSame('en_cours_de_transfert', $courrier->refresh()->statut);
+        $this->assertSame('en_attente_de_transfert', $courrier->refresh()->statut);
         $this->assertNull($courrier->service_id);
     }
 
     public function test_sans_departement_choisi_le_message_le_dit_clairement(): void
     {
-        $dga = $this->utilisateur('DGA');
-        $service = Service::factory()->create(['code' => 'TST']);
-        $this->departementPonte($service);
-        $courrier = $this->courrier($service, ['statut' => 'en_cours_de_transfert', 'service_id' => null]);
-        $this->actingAs($dga);
+        $agent = $this->utilisateur('Agent');
+        $this->departementPonte($this->serviceAvecResponsable('TST'));
+        $courrier = $this->courrierATransfererPar($agent);
+        $this->actingAs($agent);
 
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
-            ->call('validerService')
+            ->call('transferer')
             ->assertHasErrors('uniteSelectionneeId')
-            ->assertSee(__('Choisissez un département (et, si besoin, un service).'));
-    }
-
-    public function test_un_responsable_de_service_ne_peut_pas_valider_le_service(): void
-    {
-        $responsable = $this->utilisateur('Responsable de service');
-        $service = Service::factory()->create(['responsable_id' => $responsable->id, 'code' => 'TST']);
-        $courrier = $this->courrier($service, ['statut' => 'en_cours_de_transfert']);
-        $this->actingAs($responsable);
-
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
-            ->call('validerService')
-            ->assertForbidden();
-
-        $this->assertSame('en_cours_de_transfert', $courrier->refresh()->statut);
-    }
-
-    // 2026-10-06 (entretien terrain réceptionniste, voir DECISIONS.md
-    // "Délégation DGA/ADJ absents") : absence simultanée DGA + Adjoint DGA
-    // → un délégataire (ex. RH) sans le privilège courriers.dga_valider_service
-    // peut valider le service à la place du DGA qui lui a délégué cette
-    // capacité — jamais au-delà (voir les 2 tests de refus ci-dessous).
-    public function test_un_delegataire_actif_valide_le_service_a_la_place_du_dga_absent(): void
-    {
-        $dga = $this->utilisateur('DGA');
-        $rh = $this->utilisateur('Collaborateur');
-        $serviceInitial = Service::factory()->create(['code' => 'TST']);
-        $serviceRetenu = Service::factory()->create(['code' => 'AUT']);
-        $departement = $this->departementPonte($serviceRetenu);
-        $courrier = $this->courrier($serviceInitial, [
-            'statut' => 'en_cours_de_transfert',
-            'destinataire_transfert_id' => $dga->id,
-        ]);
-
-        DelegationDga::create([
-            'delegant_id' => $dga->id,
-            'delegataire_id' => $rh->id,
-            'debut_le' => now()->subHour(),
-            'actif' => true,
-            'active_par_id' => $dga->id,
-        ]);
-
-        $this->actingAs($rh);
-
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
-            ->set('siteSelectionneId', $departement->parent_id)
-            ->set('departementSelectionneId', $departement->id)
-            ->call('validerService')
-            ->assertHasNoErrors();
-
-        $courrier->refresh();
-        $this->assertSame('enregistre', $courrier->statut);
-        $this->assertSame($serviceRetenu->id, $courrier->service_id);
-    }
-
-    public function test_un_utilisateur_sans_delegation_active_ne_peut_pas_valider_a_la_place_du_dga(): void
-    {
-        $dga = $this->utilisateur('DGA');
-        $rh = $this->utilisateur('Collaborateur');
-        $service = Service::factory()->create(['code' => 'TST']);
-        $courrier = $this->courrier($service, [
-            'statut' => 'en_cours_de_transfert',
-            'destinataire_transfert_id' => $dga->id,
-        ]);
-        $this->actingAs($rh);
-
-        // Sans délégation, RH ne peut même pas voir la fiche (statut
-        // en_cours_de_transfert adressé à un autre DGA) — mount() refuse
-        // directement, avant qu'il y ait quoi que ce soit à appeler.
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])->assertForbidden();
-
-        $this->assertSame('en_cours_de_transfert', $courrier->refresh()->statut);
-    }
-
-    // Nominatif : une délégation ne couvre QUE le DGA qui l'a accordée, pas
-    // n'importe quel courrier adressé à un autre DGA.
-    public function test_une_delegation_ne_couvre_pas_un_courrier_adresse_a_un_autre_dga(): void
-    {
-        $dgaDelegant = $this->utilisateur('DGA');
-        $autreDga = $this->utilisateur('DGA');
-        $rh = $this->utilisateur('Collaborateur');
-        $service = Service::factory()->create(['code' => 'TST']);
-        $courrier = $this->courrier($service, [
-            'statut' => 'en_cours_de_transfert',
-            'destinataire_transfert_id' => $autreDga->id,
-        ]);
-
-        DelegationDga::create([
-            'delegant_id' => $dgaDelegant->id,
-            'delegataire_id' => $rh->id,
-            'debut_le' => now()->subHour(),
-            'actif' => true,
-            'active_par_id' => $dgaDelegant->id,
-        ]);
-
-        $this->actingAs($rh);
-
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])->assertForbidden();
-    }
-
-    // Une délégation DÉSACTIVÉE (DGA de retour) ne doit plus donner aucun accès.
-    public function test_une_delegation_desactivee_ne_donne_plus_aucun_acces(): void
-    {
-        $dga = $this->utilisateur('DGA');
-        $rh = $this->utilisateur('Collaborateur');
-        $service = Service::factory()->create(['code' => 'TST']);
-        $courrier = $this->courrier($service, [
-            'statut' => 'en_cours_de_transfert',
-            'destinataire_transfert_id' => $dga->id,
-        ]);
-
-        DelegationDga::create([
-            'delegant_id' => $dga->id,
-            'delegataire_id' => $rh->id,
-            'debut_le' => now()->subDay(),
-            'actif' => false,
-            'active_par_id' => $dga->id,
-            'desactive_par_id' => $dga->id,
-            'desactive_le' => now()->subHour(),
-        ]);
-
-        $this->actingAs($rh);
-
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])->assertForbidden();
-    }
-
-    // Module 1/4 — la réceptionniste transfère explicitement le courrier au
-    // DGA/ADJ DGA (2026-09-15, voir DECISIONS.md, synchronisation SRS-GEC.pdf).
-
-    public function test_lagent_createur_peut_transferer_son_courrier_au_dga(): void
-    {
-        $agent = $this->utilisateur('Agent');
-        $dga = $this->utilisateur('DGA');
-        $agent->destinatairesTransfert()->attach($dga->id);
-        $service = Service::factory()->create(['code' => 'TST']);
-        $courrier = $this->courrier($service, ['statut' => 'en_attente_de_transfert', 'service_id' => null]);
-        CourrierHistorique::create(['courrier_id' => $courrier->id, 'auteur_id' => $agent->id, 'action' => 'creation']);
-        $this->actingAs($agent);
-
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
-            ->set('destinataireTransfertChoisi', $dga->id)
-            ->call('transferer')
-            ->assertHasNoErrors();
-
-        $courrier->refresh();
-
-        $this->assertSame('en_cours_de_transfert', $courrier->statut);
-        $this->assertSame($dga->id, $courrier->destinataire_transfert_id);
-        $this->assertSame(1, CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'transfert')->count());
-    }
-
-    // Module 1/4 — mise à jour (2026-09-15, voir DECISIONS.md "Destinataires
-    // de transfert") : un destinataire qui n'est pas dans SA liste autorisée
-    // est refusé, même s'il existe bel et bien en base (Règle n°6 — jamais
-    // fait confiance à un ID posté).
-    public function test_un_destinataire_non_autorise_est_refuse(): void
-    {
-        $agent = $this->utilisateur('Agent');
-        $dga = $this->utilisateur('DGA');
-        // Pas de attach() ici : $dga n'est PAS dans la liste autorisée de $agent.
-        $service = Service::factory()->create(['code' => 'TST']);
-        $courrier = $this->courrier($service, ['statut' => 'en_attente_de_transfert', 'service_id' => null]);
-        CourrierHistorique::create(['courrier_id' => $courrier->id, 'auteur_id' => $agent->id, 'action' => 'creation']);
-        $this->actingAs($agent);
-
-        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
-            ->set('destinataireTransfertChoisi', $dga->id)
-            ->call('transferer')
-            ->assertHasErrors('destinataireTransfertChoisi');
-
-        $this->assertSame('en_attente_de_transfert', $courrier->refresh()->statut);
+            ->assertSee(__('Choisissez une direction, un département ou un service.'));
     }
 
     public function test_un_autre_agent_ne_peut_pas_transferer_le_courrier_dun_collegue(): void
@@ -830,7 +694,7 @@ class CircuitCourrierTest extends TestCase
 
     public function test_la_dga_signe_et_cloture_directement(): void
     {
-        $dga = $this->utilisateur('DGA');
+        $dga = $this->utilisateur('DG');
         $service = Service::factory()->create(['code' => 'TST']);
         // destinataire_transfert_id : une fois le service validé, la DGA
         // garde la consultation du courrier (voir CourrierPolicy::view(),
@@ -855,7 +719,7 @@ class CircuitCourrierTest extends TestCase
 
     public function test_la_dga_signe_et_transmet_a_la_tresorerie_qui_cloture(): void
     {
-        $dga = $this->utilisateur('DGA');
+        $dga = $this->utilisateur('DG');
         $service = Service::factory()->create(['code' => 'TST']);
         $courrier = $this->courrier($service, ['statut' => 'en_attente_signature_dg', 'destinataire_transfert_id' => $dga->id]);
         $this->actingAs($dga);
@@ -1092,24 +956,26 @@ class CircuitCourrierTest extends TestCase
         Notification::assertNotSentTo($responsable, CourrierNotification::class);
     }
 
-    public function test_valider_service_notifie_le_responsable_du_service_retenu(): void
+    // 2026-10-23 — le transfert au service prévient son responsable, avec
+    // l'agent comme auteur réel de l'action (remplace la notification de la
+    // validation DGA, retirée).
+    public function test_transferer_notifie_le_responsable_du_service_retenu(): void
     {
         Notification::fake();
-        $dga = $this->utilisateur('DGA');
-        $serviceInitial = Service::factory()->create(['code' => 'TST']);
+        $agent = $this->utilisateur('Agent');
         $responsableRetenu = $this->utilisateur('Responsable de service');
         $serviceRetenu = Service::factory()->create(['code' => 'AUT', 'responsable_id' => $responsableRetenu->id]);
         $departement = $this->departementPonte($serviceRetenu);
-        $courrier = $this->courrier($serviceInitial, ['statut' => 'en_cours_de_transfert']);
-        $this->actingAs($dga);
+        $courrier = $this->courrierATransfererPar($agent);
+        $this->actingAs($agent);
 
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
             ->set('siteSelectionneId', $departement->parent_id)
             ->set('departementSelectionneId', $departement->id)
-            ->call('validerService')
+            ->call('transferer')
             ->assertHasNoErrors();
 
-        Notification::assertSentTo($responsableRetenu, CourrierNotification::class, fn ($n) => $n->action === 'service_valide_dga');
+        Notification::assertSentTo($responsableRetenu, CourrierNotification::class, fn ($n) => $n->action === 'transfert' && $n->envoyePar?->id === $agent->id);
     }
 
     public function test_reaffecter_notifie_lancien_et_le_nouveau_collaborateur(): void
@@ -1174,7 +1040,7 @@ class CircuitCourrierTest extends TestCase
         $responsable = $this->utilisateur('Responsable de service');
         $responsable->privilegesDirectes()->attach(Privilege::where('cle', 'courriers.envoyer_signature_dg')->value('id'));
         $service = Service::factory()->create(['responsable_id' => $responsable->id, 'code' => 'TST']);
-        $dga = $this->utilisateur('DGA');
+        $dga = $this->utilisateur('DG');
         $courrier = $this->courrier($service, ['statut' => 'en_validation']);
         $this->actingAs(User::find($responsable->id));
 
@@ -1190,7 +1056,7 @@ class CircuitCourrierTest extends TestCase
         Notification::fake();
         $responsable = $this->utilisateur('Responsable de service');
         $service = Service::factory()->create(['responsable_id' => $responsable->id, 'code' => 'TST']);
-        $dga = $this->utilisateur('DGA');
+        $dga = $this->utilisateur('DG');
         $courrier = $this->courrier($service, ['statut' => 'en_attente_signature_dg', 'destinataire_transfert_id' => $dga->id]);
         CourrierHistorique::create(['courrier_id' => $courrier->id, 'auteur_id' => $responsable->id, 'action' => 'envoye_signature_dg']);
         $this->actingAs($dga);
@@ -1219,10 +1085,99 @@ class CircuitCourrierTest extends TestCase
 
         Notification::assertSentTo($emprunteur, CourrierNotification::class, fn ($n) => $n->action === 'decharge_emise');
 
+        // 2026-10-30 — jamais notifié de sa propre action (voir
+        // WorkflowService::notifier()) : le retour est marqué par un autre
+        // administrateur pour que l'émetteur soit prévenu.
+        $autreAdmin = $this->utilisateur('Administrateur');
+        $this->actingAs($autreAdmin);
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
             ->call('marquerDechargeRendue')
             ->assertHasNoErrors();
 
         Notification::assertSentTo($admin, CourrierNotification::class, fn ($n) => $n->action === 'decharge_rendue');
+        Notification::assertNotSentTo($autreAdmin, CourrierNotification::class);
+    }
+
+    // 2026-10-30 (Module 7, « on doit pouvoir les relancer manuellement
+    // aussi ») — courrier en traitement chez un collaborateur, suivi par son
+    // responsable.
+    private function courrierEnTraitementChezUnCollaborateur(): array
+    {
+        $responsable = $this->utilisateur('Responsable de service');
+        $service = Service::factory()->create(['responsable_id' => $responsable->id, 'code' => 'TST']);
+        $responsable->update(['service_id' => $service->id]);
+        $collaborateur = $this->utilisateur('Collaborateur', $service);
+        $courrier = $this->courrier($service)->fresh();
+        $workflow = app(WorkflowService::class);
+        $workflow->affecter($courrier, $collaborateur, $responsable);
+        $workflow->demarrerTraitement($courrier->fresh(), $collaborateur);
+
+        return [User::find($responsable->id), $collaborateur, $courrier->fresh()];
+    }
+
+    public function test_le_responsable_relance_le_collaborateur_affecte(): void
+    {
+        Notification::fake();
+        [$responsable, $collaborateur, $courrier] = $this->courrierEnTraitementChezUnCollaborateur();
+        $this->actingAs($responsable);
+
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->assertSee(__('Relancer'))
+            ->set('messageRelance', 'Merci de traiter avant vendredi')
+            ->call('relancer')
+            ->assertHasNoErrors();
+
+        Notification::assertSentTo($collaborateur, CourrierNotification::class, fn ($n) => $n->action === 'relance'
+            && $n->commentaire === 'Merci de traiter avant vendredi'
+            && $n->envoyePar?->id === $responsable->id);
+        $this->assertSame('en_traitement', $courrier->fresh()->statut, 'une relance ne change pas le statut');
+        $this->assertDatabaseHas('courrier_historiques', [
+            'courrier_id' => $courrier->id,
+            'auteur_id' => $responsable->id,
+            'action' => 'relance',
+            'commentaire' => "Relance envoyée à {$collaborateur->name} — Merci de traiter avant vendredi",
+        ]);
+    }
+
+    // Règle n°1/7 — la notification de relance (mail compris) part en file
+    // d'attente, jamais envoyée dans la requête.
+    public function test_la_relance_est_envoyee_en_file_dattente(): void
+    {
+        [$responsable, , $courrier] = $this->courrierEnTraitementChezUnCollaborateur();
+        Queue::fake();
+        $this->actingAs($responsable);
+
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->call('relancer')
+            ->assertHasNoErrors();
+
+        Queue::assertPushed(SendQueuedNotifications::class, fn ($job) => $job->notification instanceof CourrierNotification
+            && $job->notification->action === 'relance');
+    }
+
+    // Règle n°6/7 — droits refusés : le collaborateur affecté (ni se relancer
+    // soi-même, ni le privilège), un responsable d'un autre service, et un
+    // courrier pas encore affecté.
+    public function test_la_relance_est_refusee_hors_de_ses_droits(): void
+    {
+        Notification::fake();
+        [$responsable, $collaborateur, $courrier] = $this->courrierEnTraitementChezUnCollaborateur();
+        $autreResponsable = $this->utilisateur('Responsable de service');
+        $autreResponsable->update(['service_id' => Service::factory()->create(['responsable_id' => $autreResponsable->id, 'code' => 'AUT'])->id]);
+
+        $this->assertFalse(User::find($collaborateur->id)->can('relancer', $courrier));
+        $this->assertFalse(User::find($autreResponsable->id)->can('relancer', $courrier));
+
+        $this->actingAs($collaborateur);
+        Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
+            ->assertDontSee(__('Relancer'))
+            ->call('relancer')
+            ->assertForbidden();
+
+        $nonAffecte = $this->courrier($courrier->service)->fresh();
+        $this->assertFalse($responsable->can('relancer', $nonAffecte));
+
+        Notification::assertNotSentTo($collaborateur, CourrierNotification::class, fn ($n) => $n->action === 'relance');
+        $this->assertSame(0, CourrierHistorique::where('action', 'relance')->count());
     }
 }

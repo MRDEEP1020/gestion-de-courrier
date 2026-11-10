@@ -309,7 +309,7 @@ class EditFormTest extends TestCase
         $this->actingAs($agent);
 
         Livewire::test(EditForm::class, ['courrierId' => $courrier->id])
-            ->set('pieceJointe', UploadedFile::fake()->create('copie.pdf', 100, 'application/pdf'))
+            ->set('nouvellesPiecesJointes', [UploadedFile::fake()->create('copie.pdf', 100, 'application/pdf')])
             ->call('enregistrerModification')
             ->assertHasNoErrors();
 
@@ -321,6 +321,29 @@ class EditFormTest extends TestCase
         $this->assertSame(1, CourrierHistorique::where('courrier_id', $courrier->id)
             ->where('action', 'ajout_piece_jointe')
             ->count());
+    }
+
+    // 2026-10-23 — plusieurs pièces jointes ajoutables d'un coup en
+    // modification aussi (même mécanisme qu'à l'enregistrement).
+    public function test_on_peut_ajouter_plusieurs_pieces_jointes_lors_dune_modification(): void
+    {
+        Storage::fake('s3');
+
+        $agent = $this->utilisateurAvecProfil('Agent');
+        $courrier = $this->courrierEnregistrePar($agent);
+
+        $this->actingAs($agent);
+
+        Livewire::test(EditForm::class, ['courrierId' => $courrier->id])
+            ->set('nouvellesPiecesJointes', [
+                UploadedFile::fake()->create('facture.pdf', 100, 'application/pdf'),
+                UploadedFile::fake()->create('bon-de-livraison.pdf', 100, 'application/pdf'),
+            ])
+            ->call('enregistrerModification')
+            ->assertHasNoErrors();
+
+        $this->assertSame(2, $courrier->piecesJointes()->count());
+        $this->assertSame(2, CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'ajout_piece_jointe')->count());
     }
 
     public function test_les_nouveaux_champs_de_la_maquette_sont_charges_a_lecran_de_modification(): void
@@ -415,7 +438,7 @@ class EditFormTest extends TestCase
         $this->actingAs($agent);
 
         Livewire::test(EditForm::class, ['courrierId' => $courrier->id])
-            ->set('pieceJointe', UploadedFile::fake()->create('deuxieme.pdf', 100, 'application/pdf'))
+            ->set('nouvellesPiecesJointes', [UploadedFile::fake()->create('deuxieme.pdf', 100, 'application/pdf')])
             ->call('enregistrerModification')
             ->assertHasNoErrors();
 

@@ -82,17 +82,20 @@ class CourrierListEnCoursTest extends TestCase
             ->assertDontSee($pasLeMien->numero_reference);
     }
 
-    public function test_une_dga_retrouve_ce_qui_attend_sa_validation(): void
+    // 2026-10-23 — le responsable retrouve ce que son service doit accepter
+    // (remplace la file de validation DGA, retirée).
+    public function test_un_responsable_retrouve_ce_qui_attend_son_acceptation(): void
     {
-        $service = Service::factory()->create(['code' => 'TST']);
+        $responsable = $this->utilisateur('Responsable de service');
+        $service = Service::factory()->create(['code' => 'TST', 'responsable_id' => $responsable->id]);
         $enAttente = $this->courrier($service, ['statut' => 'en_cours_de_transfert']);
-        $dejaValideParAutrui = $this->courrier($service, ['statut' => 'enregistre']);
+        $dejaAccepte = $this->courrier($service, ['statut' => 'enregistre']);
 
-        $this->actingAs($this->utilisateur('DGA'));
+        $this->actingAs($responsable);
 
         Livewire::withQueryParams(['statut' => 'en_cours_de_transfert'])->test(CourrierList::class)
             ->assertSee($enAttente->numero_reference)
-            ->assertDontSee($dejaValideParAutrui->numero_reference);
+            ->assertDontSee($dejaAccepte->numero_reference);
     }
 
     public function test_un_administrateur_voit_les_courriers_en_cours_de_tous_les_services(): void

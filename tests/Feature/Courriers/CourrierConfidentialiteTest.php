@@ -93,7 +93,7 @@ class CourrierConfidentialiteTest extends TestCase
         $courrier = $this->courrier($service, ['statut' => 'en_cours_de_transfert', 'confidentialite' => 3]);
 
         $dga = User::factory()->create([
-            'profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id,
+            'profil_id' => Profil::firstOrCreate(['nom' => 'DG'])->id,
             'niveau_confidentialite' => 1,
         ]);
 
@@ -104,17 +104,22 @@ class CourrierConfidentialiteTest extends TestCase
     // un bypass caché) peut consulter n'importe quel courrier — nécessaire
     // pour qu'elle puisse ouvrir un courrier et en CONFIRMER/CORRIGER le
     // niveau (WorkflowService::validerService()).
-    public function test_une_dga_correctement_configuree_voit_tout(): void
+    // 2026-10-23 — plus de DGA dans le circuit d'entrée (voir DECISIONS.md
+    // "Transfert direct au service et acceptation") : c'est le responsable du
+    // service destinataire, correctement configuré (niveau élevé), qui voit
+    // un courrier confidentiel transféré à son service — mais pas encore son
+    // contenu tant qu'il ne l'a pas accepté.
+    public function test_un_responsable_correctement_configure_voit_le_courrier_transfere_a_son_service(): void
     {
-        $service = Service::factory()->create();
-        $courrier = $this->courrier($service, ['statut' => 'en_cours_de_transfert', 'confidentialite' => 3]);
-
-        $dga = User::factory()->create([
-            'profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id,
+        $responsable = User::factory()->create([
+            'profil_id' => Profil::firstOrCreate(['nom' => 'Responsable de service'])->id,
             'niveau_confidentialite' => 3,
         ]);
+        $service = Service::factory()->create(['responsable_id' => $responsable->id]);
+        $courrier = $this->courrier($service, ['statut' => 'en_cours_de_transfert', 'confidentialite' => 3]);
 
-        $this->assertTrue($dga->can('view', $courrier));
+        $this->assertTrue($responsable->can('view', $courrier));
+        $this->assertFalse($responsable->can('voirContenu', $courrier));
     }
 
     // Le garde-fou couvre TOUTE ability qui reçoit un $courrier précis, pas

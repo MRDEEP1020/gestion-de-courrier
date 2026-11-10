@@ -30,7 +30,7 @@ class ComptesTestPiloteSeeder extends Seeder
 
         $administrateur = Profil::firstOrCreate(['nom' => 'Administrateur']);
         $agent = Profil::firstOrCreate(['nom' => 'Agent']);
-        $dga = Profil::firstOrCreate(['nom' => 'DGA']);
+        $dg = Profil::firstOrCreate(['nom' => 'DG']);
         $responsable = Profil::firstOrCreate(['nom' => 'Responsable de service']);
         $collaborateur = Profil::firstOrCreate(['nom' => 'Collaborateur']);
 
@@ -39,7 +39,7 @@ class ComptesTestPiloteSeeder extends Seeder
 
         $this->compte('Admin Test', 'admin@test.local', $administrateur->id);
         $this->compte('Agent Test', 'agent@test.local', $agent->id);
-        $this->compte('DGA Test', 'dga@test.local', $dga->id);
+        $this->compte('DG Test', 'dga@test.local', $dg->id);
 
         // Circuit "sinistre confirmé" (saute la validation DGA) : responsable
         // + collaborateur de DSIN.

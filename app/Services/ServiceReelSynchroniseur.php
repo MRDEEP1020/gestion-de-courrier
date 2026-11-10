@@ -18,12 +18,16 @@ use Illuminate\Support\Str;
 // services).
 class ServiceReelSynchroniseur
 {
-    // 2026-10-09 — Département ajouté (voir OrganizationUnit::TYPE_DIRECTION) :
-    // depuis l'ajout du niveau Direction, "department" est devenu le niveau
-    // réellement opérationnel le plus haut (ex. "Département Informatique",
-    // qui reçoit du courrier directement) — Direction/Site/Company restent
-    // structurels, jamais pontés.
-    public const TYPES_SYNCHRONISES = [OrganizationUnit::TYPE_DEPARTMENT, OrganizationUnit::TYPE_SERVICE, OrganizationUnit::TYPE_SUB_SERVICE];
+    // 2026-10-09 — Département ajouté (voir OrganizationUnit::TYPE_DIRECTION).
+    // 2026-10-23 (voir DECISIONS.md "Transmission descendante par la
+    // Direction") — Direction ajoutée à son tour : un courrier peut être
+    // transféré à une Direction, que son responsable accepte puis transmet
+    // à l'un de ses départements ; il lui faut donc un service réel.
+    // 2026-10-26 (voir DECISIONS.md "Titres des chefs et Direction Générale")
+    // — le Site aussi : la racine de l'organigramme est la Direction Générale,
+    // à qui un courrier peut être transféré (son Directeur l'accepte puis le
+    // transmet). Seule Company reste structurelle, jamais pontée.
+    public const TYPES_SYNCHRONISES = [OrganizationUnit::TYPE_SITE, OrganizationUnit::TYPE_DIRECTION, OrganizationUnit::TYPE_DEPARTMENT, OrganizationUnit::TYPE_SERVICE, OrganizationUnit::TYPE_SUB_SERVICE];
 
     // $avant : valeurs du nœud AVANT modification (null à la création), pour
     // ne propager un renommage / un changement de responsable QUE si nœud et

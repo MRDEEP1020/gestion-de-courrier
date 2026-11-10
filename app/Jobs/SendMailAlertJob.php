@@ -8,13 +8,16 @@ use App\Models\OrganizationUnit;
 use App\Models\Parametre;
 use App\Models\User;
 use App\Notifications\CourrierEnRetardNotification;
+use App\Services\NotificationPreferenceService;
 use App\Services\WorkflowService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Throwable;
@@ -38,12 +41,9 @@ class SendMailAlertJob implements ShouldQueue
     {
         $parametres = Parametre::actuel();
         $aujourdhui = today();
-        $relance = now()->subDays($parametres->sla_relance_jours);
 
         $this->traiter(
-            Courrier::query()
-                ->enRetard()
-                ->where(fn ($q) => $q->whereNull('alerte_retard_le')->orWhere('alerte_retard_le', '<=', $relance)),
+            Courrier::query()->enRetard(),
             enRetard: true,
         );
 
@@ -101,12 +101,38 @@ class SendMailAlertJob implements ShouldQueue
     {
         $destinataires = $this->destinataires($courrier, $enRetard);
 
-        if ($destinataires->isNotEmpty()) {
-            Notification::send($destinataires, new CourrierEnRetardNotification($courrier, $enRetard));
+        if ($enRetard) {
+            $destinataires = $this->destinatairesRelanceDue($courrier, $destinataires);
         }
 
-        // saveQuietly : ne pas redéclencher le recalcul de date limite (qui
-        // remettrait ces marqueurs à null) — seule la trace d'envoi change.
+        if ($destinataires->isNotEmpty()) {
+            Notification::send($destinataires, new CourrierEnRetardNotification($courrier, $enRetard));
+
+            if ($enRetard) {
+                $this->marquerRelancesEnvoyees($courrier, $destinataires);
+            }
+
+            $courrier->forceFill([$enRetard ? 'alerte_retard_le' : 'alerte_risque_le' => now()])->saveQuietly();
+
+            CourrierHistorique::create([
+                'courrier_id' => $courrier->id,
+                'auteur_id' => null,
+                'action' => $enRetard ? 'alerte_retard' : 'alerte_risque',
+                'commentaire' => 'Alerte SLA envoyée à '.$destinataires->pluck('name')->implode(', '),
+            ]);
+
+            return;
+        }
+
+        // Une seule trace pour un courrier sans destinataire autorisé ; le
+        // marqueur n'empêche pas un futur destinataire activé de recevoir sa
+        // relance, car l'anti-doublon est désormais suivi par utilisateur.
+        if ($enRetard && $courrier->alerte_retard_le !== null) {
+            return;
+        }
+
+        // saveQuietly : ne pas redéclencher le recalcul de date limite, qui
+        // réarme les alertes.
         $courrier->forceFill([$enRetard ? 'alerte_retard_le' : 'alerte_risque_le' => now()])->saveQuietly();
 
         // Règle n°5 — l'alerte est une action du système sur le courrier.
@@ -114,10 +140,55 @@ class SendMailAlertJob implements ShouldQueue
             'courrier_id' => $courrier->id,
             'auteur_id' => null,
             'action' => $enRetard ? 'alerte_retard' : 'alerte_risque',
-            'commentaire' => $destinataires->isEmpty()
-                ? 'Alerte SLA : aucun destinataire autorisé trouvé.'
-                : 'Alerte SLA envoyée à '.$destinataires->pluck('name')->implode(', '),
+            'commentaire' => 'Alerte SLA : aucun destinataire autorisé trouvé.',
         ]);
+    }
+
+    private function destinatairesRelanceDue(Courrier $courrier, Collection $candidats): Collection
+    {
+        $preference = app(NotificationPreferenceService::class);
+        $destinataires = $candidats
+            ->filter(fn (User $user) => $preference->peutNotifier($user, 'alertes_sla'))
+            ->values();
+
+        if ($destinataires->isEmpty()) {
+            return $destinataires;
+        }
+
+        $derniereRelanceParUtilisateur = DB::table('courrier_alerte_utilisateurs')
+            ->where('courrier_id', $courrier->id)
+            ->whereIn('user_id', $destinataires->pluck('id'))
+            ->get()
+            ->keyBy('user_id');
+        $dateLimite = $courrier->date_limite->toDateString();
+
+        return $destinataires->filter(function (User $user) use ($derniereRelanceParUtilisateur, $dateLimite) {
+            $derniereRelance = $derniereRelanceParUtilisateur->get($user->id);
+
+            return $derniereRelance === null
+                || $derniereRelance->date_limite !== $dateLimite
+                || Carbon::parse($derniereRelance->notifie_le)
+                    ->addDays($user->frequenceRelanceSlaJours())
+                    ->lte(now());
+        })->values();
+    }
+
+    private function marquerRelancesEnvoyees(Courrier $courrier, Collection $destinataires): void
+    {
+        $dateLimite = $courrier->date_limite->toDateString();
+        $notifieLe = now();
+
+        foreach ($destinataires as $destinataire) {
+            DB::table('courrier_alerte_utilisateurs')->updateOrInsert(
+                ['courrier_id' => $courrier->id, 'user_id' => $destinataire->id],
+                [
+                    'date_limite' => $dateLimite,
+                    'notifie_le' => $notifieLe,
+                    'created_at' => $notifieLe,
+                    'updated_at' => $notifieLe,
+                ],
+            );
+        }
     }
 
     // "Les bonnes personnes" (PRD §1.6) : qui doit agir maintenant selon
@@ -132,7 +203,6 @@ class SendMailAlertJob implements ShouldQueue
         $candidats = collect([
             $collaborateur,
             ($enRetard || ! $collaborateur) ? $responsable : null,
-            $courrier->statut === 'en_cours_de_transfert' ? $courrier->destinataireTransfert : null,
             $courrier->statut === 'en_attente_de_transfert' ? $this->createur($courrier) : null,
         ]);
 

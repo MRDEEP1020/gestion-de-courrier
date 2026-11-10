@@ -361,24 +361,15 @@ class UserList extends Component
     #[Computed]
     public function ajoutDepartementsDisponibles()
     {
-        $parentId = $this->ajoutDirectionSelectionneeId ?? $this->ajoutSiteSelectionneId;
-
-        return OrganizationUnit::enfantsActifsDe($parentId, OrganizationUnit::TYPE_DEPARTMENT);
+        // 2026-10-26 — services rattachés directement inclus (voir
+        // OrganizationUnit::niveauDepartementSous()).
+        return OrganizationUnit::niveauDepartementSous($this->ajoutDirectionSelectionneeId ?? $this->ajoutSiteSelectionneId);
     }
 
     #[Computed]
     public function ajoutUnitesDisponibles()
     {
-        if ($this->ajoutDepartementSelectionneId === null) {
-            return collect();
-        }
-
-        return OrganizationUnit::query()
-            ->where('parent_id', $this->ajoutDepartementSelectionneId)
-            ->whereIn('type', [OrganizationUnit::TYPE_SERVICE, OrganizationUnit::TYPE_SUB_SERVICE])
-            ->where('status', OrganizationUnit::STATUT_ACTIF)
-            ->orderBy('name')
-            ->get();
+        return OrganizationUnit::unitesSous($this->ajoutDepartementSelectionneId);
     }
 
     // 2026-10-09 — niveau Direction, OPTIONNEL comme le reste de la cascade.
@@ -391,24 +382,15 @@ class UserList extends Component
     #[Computed]
     public function editionDepartementsDisponibles()
     {
-        $parentId = $this->editionDirectionSelectionneeId ?? $this->editionSiteSelectionneId;
-
-        return OrganizationUnit::enfantsActifsDe($parentId, OrganizationUnit::TYPE_DEPARTMENT);
+        // 2026-10-26 — services rattachés directement inclus (voir
+        // OrganizationUnit::niveauDepartementSous()).
+        return OrganizationUnit::niveauDepartementSous($this->editionDirectionSelectionneeId ?? $this->editionSiteSelectionneId);
     }
 
     #[Computed]
     public function editionUnitesDisponibles()
     {
-        if ($this->editionDepartementSelectionneId === null) {
-            return collect();
-        }
-
-        return OrganizationUnit::query()
-            ->where('parent_id', $this->editionDepartementSelectionneId)
-            ->whereIn('type', [OrganizationUnit::TYPE_SERVICE, OrganizationUnit::TYPE_SUB_SERVICE])
-            ->where('status', OrganizationUnit::STATUT_ACTIF)
-            ->orderBy('name')
-            ->get();
+        return OrganizationUnit::unitesSous($this->editionDepartementSelectionneId);
     }
 
     // Filtre de la table — un Département par ligne (pas de profondeur
@@ -481,16 +463,23 @@ class UserList extends Component
         return $this->departementLabelParServiceId[$utilisateur->service_id] ?? null;
     }
 
-    // Nœud RÉELLEMENT retenu (Service/Unité choisi, sinon le Département
-    // lui-même — spec §1), résolu vers le service RÉEL pour users.service_id
-    // — même patron que ShowCourrier/RegistrationForm.
-    private function resoudreServiceDepuisCascade(?int $uniteId, ?int $departementId): ?int
+    // Nœud RÉELLEMENT retenu : le niveau le plus fin choisi — Service/Unité,
+    // sinon Département (ou Service rattaché directement), sinon la Direction
+    // (2026-10-23 : un collaborateur direct du chef de Direction), sinon le
+    // Site, c.-à-d. la Direction Générale (2026-10-26, retour utilisateur :
+    // « chaque user doit être dans une direction, département, service » —
+    // le DG et ses collaborateurs directs y sont rattachés ; « Site sans
+    // département » ne désigne plus un agent d'accueil, qui a désormais lui
+    // aussi son entité).
+    private static function noeudRetenu(?int $siteId, ?int $directionId, ?int $departementId, ?int $uniteId): ?int
     {
-        $noeud = $uniteId
-            ? OrganizationUnit::find($uniteId)
-            : ($departementId ? OrganizationUnit::find($departementId) : null);
+        return $uniteId ?: $departementId ?: $directionId ?: $siteId;
+    }
 
-        return $noeud?->service_id;
+    // Service RÉEL du nœud retenu, pour users.service_id — même patron que ShowCourrier.
+    private function resoudreServiceDepuisCascade(?int $noeudId): ?int
+    {
+        return $noeudId ? OrganizationUnit::find($noeudId)?->service_id : null;
     }
 
     // 2026-10-09 — retour utilisateur direct ("WHY IF I CHOSE DEPARTMENT AND
@@ -553,21 +542,15 @@ class UserList extends Component
         return [$this->editionSiteSelectionneId, $this->editionDirectionSelectionneeId, $this->editionDepartementSelectionneId, $this->editionUniteSelectionneeId];
     }
 
-    // Remonte $courant PUIS ses ancêtres (même patron que
-    // ShowCourrier::preselectionnerCascadeDepuisService()).
+    // Remonte $courant PUIS ses ancêtres (voir OrganizationUnit::selectionCascade()).
     private function remplirCascadeEditionDepuis(?OrganizationUnit $courant): void
     {
-        while ($courant !== null) {
-            match ($courant->type) {
-                OrganizationUnit::TYPE_SUB_SERVICE, OrganizationUnit::TYPE_SERVICE => $this->editionUniteSelectionneeId = $courant->id,
-                OrganizationUnit::TYPE_DEPARTMENT => $this->editionDepartementSelectionneId = $courant->id,
-                OrganizationUnit::TYPE_DIRECTION => $this->editionDirectionSelectionneeId = $courant->id,
-                OrganizationUnit::TYPE_SITE => $this->editionSiteSelectionneId = $courant->id,
-                default => null,
-            };
+        $selection = OrganizationUnit::selectionCascade($courant);
 
-            $courant = $courant->parent;
-        }
+        $this->editionSiteSelectionneId = $selection['site'];
+        $this->editionDirectionSelectionneeId = $selection['direction'];
+        $this->editionDepartementSelectionneId = $selection['departement'];
+        $this->editionUniteSelectionneeId = $selection['unite'];
     }
 
     #[Computed]
@@ -609,18 +592,24 @@ class UserList extends Component
             'ajoutProfilId' => __('profil'),
         ]);
 
-        // Nullable (2026-09-22, demande explicite de l'utilisateur) : une
-        // réceptionniste à l'accueil n'appartient à aucun département listé
-        // — colonne déjà nullable en base
-        // (2026_09_04_110000_add_service_id_to_users_table.php). Résolu via
-        // la cascade Département/Service-Unité (2026-09-23) plutôt qu'un
-        // sélecteur plat — voir resoudreServiceDepuisCascade().
+        // 2026-10-26 (« chaque user doit être dans une direction,
+        // département, service ») — remplace la règle du 2026-09-22 (une
+        // réceptionniste sans département) : l'entité est obligatoire,
+        // revérifiée ici côté serveur (Règle n°6).
+        $noeudId = self::noeudRetenu($this->ajoutSiteSelectionneId, $this->ajoutDirectionSelectionneeId, $this->ajoutDepartementSelectionneId, $this->ajoutUniteSelectionneeId);
+
+        if ($noeudId === null) {
+            $this->addError('ajoutEntite', __('Choisissez la direction, le département ou le service de cet utilisateur.'));
+
+            return;
+        }
+
         $user = User::create([
             'name' => trim("{$data['ajoutNom']} {$data['ajoutPrenom']}"),
             'email' => $data['ajoutEmail'],
             'telephone' => $data['ajoutTelephone'] ?: null,
             'poste' => $data['ajoutPoste'] ?: null,
-            'service_id' => $this->resoudreServiceDepuisCascade($this->ajoutUniteSelectionneeId, $this->ajoutDepartementSelectionneId),
+            'service_id' => $this->resoudreServiceDepuisCascade($noeudId),
             'profil_id' => $data['ajoutProfilId'],
             'niveau_confidentialite' => $data['ajoutNiveauConfidentialite'],
             'actif' => $this->ajoutActif,
@@ -633,7 +622,7 @@ class UserList extends Component
             'password' => Hash::make(Str::random(40)),
         ]);
 
-        $this->synchroniserRattachementPrincipal($user, $this->ajoutUniteSelectionneeId ?: $this->ajoutDepartementSelectionneId);
+        $this->synchroniserRattachementPrincipal($user, $noeudId);
 
         if ($this->ajoutPhoto) {
             $avatars->televerser($user, $this->ajoutPhoto);
@@ -705,13 +694,21 @@ class UserList extends Component
             'editionProfilId' => __('profil'),
         ]);
 
-        // Nullable — même raison que ajouter() ci-dessus ; résolu via la
-        // cascade Département/Service-Unité (2026-09-23).
+        // 2026-10-26 — entité obligatoire, comme à la création (voir
+        // ajouter()) : un compte encore sans entité doit en recevoir une à sa
+        // prochaine modification.
+        $noeudId = self::noeudRetenu($this->editionSiteSelectionneId, $this->editionDirectionSelectionneeId, $this->editionDepartementSelectionneId, $this->editionUniteSelectionneeId);
+
+        if ($noeudId === null) {
+            $this->addError('editionEntite', __('Choisissez la direction, le département ou le service de cet utilisateur.'));
+
+            return;
+        }
+
         // 2026-09-24 — cascade NON touchée qui ne résout aucun service réel
-        // (service pas encore dans l'organigramme, ex. agent "AC", ou entité
-        // affichée non reliée à un service) : le service actuel est conservé.
-        // Auparavant, corriger un simple téléphone effaçait ce service.
-        $serviceResolu = $this->resoudreServiceDepuisCascade($this->editionUniteSelectionneeId, $this->editionDepartementSelectionneId);
+        // (entité affichée non reliée à un service) : le service actuel est
+        // conservé. Auparavant, corriger un simple téléphone effaçait ce service.
+        $serviceResolu = $this->resoudreServiceDepuisCascade($noeudId);
         $cascadeModifiee = $this->cascadeEdition() !== $this->editionCascadeInitiale;
 
         if ($serviceResolu === null && ! $cascadeModifiee) {
@@ -723,7 +720,7 @@ class UserList extends Component
         // rattachement organisationnel existant, quelle que soit sa source
         // (responsable désigné, rattachement réel déjà posé ailleurs...).
         if ($cascadeModifiee) {
-            $this->synchroniserRattachementPrincipal($user, $this->editionUniteSelectionneeId ?: $this->editionDepartementSelectionneId);
+            $this->synchroniserRattachementPrincipal($user, $noeudId);
         }
 
         // 2026-10-09 (audit "list me all") — capturé AVANT update() pour

@@ -2,12 +2,16 @@
 
 namespace App\Models;
 
+use App\Concerns\EcritureSeule;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class CourrierHistorique extends Model
 {
-    // Append-only (Règle n°5) : pas d'updated_at, et le modèle n'expose aucune voie de mise à jour.
+    // Append-only (Règle n°5) : pas d'updated_at, et toute modification ou
+    // suppression via le modèle lève une exception (EcritureSeule, 2026-10-30).
+    use EcritureSeule;
+
     const UPDATED_AT = null;
 
     protected $fillable = ['courrier_id', 'auteur_id', 'action', 'commentaire'];
@@ -40,8 +44,19 @@ class CourrierHistorique extends Model
         'creation' => ['libelle' => 'Courrier enregistré', 'icone' => 'document-plus', 'couleur' => 'blue'],
         'modification' => ['libelle' => 'Informations modifiées', 'icone' => 'pencil-square', 'couleur' => 'neutre'],
         'numerisation' => ['libelle' => 'Document numérisé', 'icone' => 'camera', 'couleur' => 'blue'],
-        'transfert' => ['libelle' => 'Transféré', 'icone' => 'paper-airplane', 'couleur' => 'blue'],
-        'service_valide_dga' => ['libelle' => 'Service validé par la DGA', 'icone' => 'check-circle', 'couleur' => 'blue'],
+        'transfert' => ['libelle' => 'Transféré au service', 'icone' => 'paper-airplane', 'couleur' => 'blue'],
+        // 2026-10-23 — acceptation/refus par le service destinataire et remise
+        // de l'original papier (voir DECISIONS.md "Transfert direct au service
+        // et acceptation"). 'service_valide_dga' reste affiché pour les
+        // courriers validés par la DGA avant la fin de ce routage.
+        'transfert_accepte' => ['libelle' => 'Accepté par le service', 'icone' => 'check-circle', 'couleur' => 'success'],
+        'transfert_refuse' => ['libelle' => 'Refusé par le service', 'icone' => 'x-circle', 'couleur' => 'warning'],
+        'original_remis' => ['libelle' => 'Original papier remis', 'icone' => 'document-check', 'couleur' => 'success'],
+        'reception_original_signee' => ['libelle' => 'Réception de l\'original signée', 'icone' => 'pencil-square', 'couleur' => 'success'],
+        // 2026-10-23 — transmission par le responsable d'une entité (ex. une
+        // Direction) à l'une de ses unités.
+        'transmission' => ['libelle' => 'Transmis à une unité', 'icone' => 'arrow-down-right', 'couleur' => 'blue'],
+        'service_valide_dga' => ['libelle' => 'Service validé par la DG', 'icone' => 'check-circle', 'couleur' => 'blue'],
         'confidentialite_modifiee_dga' => ['libelle' => 'Confidentialité modifiée', 'icone' => 'lock-closed', 'couleur' => 'navy'],
         'confidentiel_remis' => ['libelle' => 'Pli confidentiel remis', 'icone' => 'lock-open', 'couleur' => 'navy'],
         'affectation' => ['libelle' => 'Affecté', 'icone' => 'user-plus', 'couleur' => 'blue'],
@@ -70,6 +85,18 @@ class CourrierHistorique extends Model
         'suppression' => ['libelle' => 'Supprimé', 'icone' => 'trash', 'couleur' => 'danger'],
         'ocr_echec' => ['libelle' => 'Échec de l\'extraction du texte', 'icone' => 'exclamation-triangle', 'couleur' => 'danger'],
         'alerte_escalade' => ['libelle' => 'Alerte de retard envoyée', 'icone' => 'bell-alert', 'couleur' => 'danger'],
+        // 2026-10-30 (Module 7, relances) — relance manuelle, et libellés des
+        // alertes automatiques de SendMailAlertJob (affichées jusque-là brutes).
+        'relance' => ['libelle' => 'Relance envoyée', 'icone' => 'bell-alert', 'couleur' => 'warning'],
+        // 2026-10-30 — conformité de l'archivage (Module 9).
+        'conservation_prolongee' => ['libelle' => 'Conservation prolongée', 'icone' => 'clock', 'couleur' => 'neutre'],
+        'gel_juridique' => ['libelle' => 'Placé sous gel juridique', 'icone' => 'lock-closed', 'couleur' => 'warning'],
+        'gel_juridique_leve' => ['libelle' => 'Gel juridique levé', 'icone' => 'lock-open', 'couleur' => 'neutre'],
+        'destruction' => ['libelle' => 'Archive détruite (échéance de conservation)', 'icone' => 'trash', 'couleur' => 'danger'],
+        'integrite_alerte' => ['libelle' => 'Alerte d\'intégrité du fichier', 'icone' => 'shield-exclamation', 'couleur' => 'danger'],
+        'integrite_retablie' => ['libelle' => 'Intégrité du fichier confirmée', 'icone' => 'shield-check', 'couleur' => 'success'],
+        'alerte_risque' => ['libelle' => 'Alerte automatique — bientôt en retard', 'icone' => 'bell', 'couleur' => 'warning'],
+        'alerte_retard' => ['libelle' => 'Relance automatique — en retard', 'icone' => 'bell-alert', 'couleur' => 'danger'],
         // 2026-10-09 — extension du circuit générique (Signature DG / Trésorerie).
         'envoye_signature_dg' => ['libelle' => 'Envoyé en signature DG', 'icone' => 'paper-airplane', 'couleur' => 'navy'],
         'signe_dg_cloture' => ['libelle' => 'Signé par la DG — clôturé', 'icone' => 'identification', 'couleur' => 'success'],

@@ -36,7 +36,7 @@ class RegistrationFormConfidentielTest extends TestCase
     public function test_un_agent_enregistre_un_courrier_confidentiel_sans_jamais_le_scanner(): void
     {
         $agent = $this->utilisateurAvecProfil('Agent');
-        $dga = $this->utilisateurAvecProfil('DGA');
+        $dga = $this->utilisateurAvecProfil('DG');
         $agent->destinatairesTransfert()->attach($dga->id);
         $this->actingAs($agent);
 
@@ -117,7 +117,7 @@ class RegistrationFormConfidentielTest extends TestCase
     public function test_lagent_createur_imprime_laccuse_mais_pas_un_autre_agent(): void
     {
         $agent = $this->utilisateurAvecProfil('Agent');
-        $dga = $this->utilisateurAvecProfil('DGA');
+        $dga = $this->utilisateurAvecProfil('DG');
         $agent->destinatairesTransfert()->attach($dga->id);
         $this->actingAs($agent);
 
@@ -144,7 +144,7 @@ class RegistrationFormConfidentielTest extends TestCase
     public function test_un_destinataire_non_autorise_est_refuse(): void
     {
         $agent = $this->utilisateurAvecProfil('Agent');
-        $dga = $this->utilisateurAvecProfil('DGA');
+        $dga = $this->utilisateurAvecProfil('DG');
         // Pas de attach() : $dga n'est pas dans la liste autorisée de $agent.
         $this->actingAs($agent);
 
@@ -162,7 +162,7 @@ class RegistrationFormConfidentielTest extends TestCase
     public function test_le_nom_sur_lenveloppe_est_obligatoire(): void
     {
         $agent = $this->utilisateurAvecProfil('Agent');
-        $dga = $this->utilisateurAvecProfil('DGA');
+        $dga = $this->utilisateurAvecProfil('DG');
         $agent->destinatairesTransfert()->attach($dga->id);
         $this->actingAs($agent);
 
@@ -233,13 +233,13 @@ class RegistrationFormConfidentielTest extends TestCase
     {
         Storage::fake('s3');
         $agent = $this->utilisateurAvecProfil('Agent');
-        $dga = $this->utilisateurAvecProfil('DGA');
+        $dga = $this->utilisateurAvecProfil('DG');
         $agent->destinatairesTransfert()->attach($dga->id);
         $this->actingAs($agent);
 
         Livewire::test(RegistrationForm::class)
             ->call('basculerModeConfidentiel', true)
-            ->set('document', UploadedFile::fake()->image('scan.jpg', 1700, 2200))
+            ->set('documentsImportes', [UploadedFile::fake()->image('scan.jpg', 1700, 2200)])
             ->call('importerFichier');
 
         $this->assertDatabaseCount('courrier_brouillons', 0);

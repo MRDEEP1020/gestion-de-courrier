@@ -2,9 +2,12 @@
 
 namespace App\Livewire\Backend;
 
+use App\Concerns\ChoixServiceCascade;
 use App\Models\Courrier;
+use App\Models\CourrierConsultation;
 use App\Models\CourrierHistorique;
 use App\Models\DossierClassement;
+use App\Models\EmpreinteFichier;
 use App\Models\MotCle;
 use App\Models\OrganizationUnit;
 use App\Models\User;
@@ -25,6 +28,10 @@ use RuntimeException;
 #[Title('Détail du courrier')]
 class ShowCourrier extends Component
 {
+    // Module 1/4 (2026-10-23) — choix du service destinataire du transfert
+    // (cascade Organisation), partagé avec MesCourriers et CourrierList.
+    use ChoixServiceCascade;
+
     // Propriété : ID primitif uniquement (pas de modèle Eloquent complet) — Règle n°2.
     public int $courrierId;
 
@@ -57,37 +64,21 @@ class ShowCourrier extends Component
     // l'action, jamais plusieurs champs croisés comme CourrierForm).
     public ?int $collaborateurSelectionne = null;
 
-    // Module 1/4 — panneau "Valider le service" (DGA/ADJ), demande explicite
-    // de l'utilisateur (2026-09-08). Module "Organisation" v2 (2026-09-22,
-    // spec §16) — remplace le sélecteur plat unique par une cascade
-    // Site → Département → Service/Unité, naviguant dans la vraie structure
-    // organisationnelle. La résolution finale (Service::id RÉEL écrit sur
-    // courriers.service_id) passe par le PONT organization_units.service_id
-    // — voir uniteFinale()/validerService() ci-dessous. Le reste du circuit
-    // (WorkflowService::validerService(), segmentClassement()) est
-    // INCHANGÉ, aucune modification de la génération du numéro de référence
-    // ni des chemins de stockage.
-    public ?int $siteSelectionneId = null;
+    // 2026-10-29 (« Un seul bouton Affecter ») — choix dans la modale
+    // « Affecter » : 'collaborateur' (choisi dans la liste) ou 'moi'
+    // (« Me l'affecter et commencer », l'ancien bouton « Traiter moi-même »).
+    public string $modeAffectation = 'collaborateur';
 
-    // 2026-10-09 — niveau Direction ajouté (OrganizationUnit::TYPE_DIRECTION),
-    // OPTIONNEL comme Site l'était déjà pour Département.
-    public ?int $directionSelectionneeId = null;
+    // Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au service
+    // et acceptation") — motif obligatoire du refus d'un transfert par le
+    // service destinataire.
+    public string $motifRefusTransfert = '';
 
-    public ?int $departementSelectionneId = null;
-
-    public ?int $uniteSelectionneeId = null;
-
-    // 2026-09-21 — demande explicite de l'utilisateur : la DGA confirme (ou
-    // corrige) le niveau de confidentialité RÉEL du courrier en même temps
-    // qu'elle confirme le service, voir WorkflowService::validerService().
-    // Pré-rempli avec le choix de la réceptionniste à l'enregistrement
-    // (mount() ci-dessous), jamais vide.
-    public int $confidentialiteSelectionnee = 1;
-
-    // Module 1/4 — modale "Transférer à" (2026-09-15, voir DECISIONS.md
-    // "Destinataires de transfert") — id brut, revérifié contre
-    // Auth::user()->destinatairesTransfert() avant d'agir (Règle n°6).
-    public ?int $destinataireTransfertChoisi = null;
+    // 2026-10-23 (voir DECISIONS.md "Transmission descendante par la
+    // Direction") — unité (organization_units.id) à laquelle le responsable
+    // d'une entité transmet le courrier. Id brut, revérifié contre
+    // $this->unitesSubordonnees avant d'agir (Règle n°6).
+    public ?int $uniteTransmissionId = null;
 
     // Un champ par action plutôt qu'un seul "motifCirculation" partagé : pour
     // un Administrateur, plusieurs formulaires d'actions différentes peuvent
@@ -100,6 +91,9 @@ class ShowCourrier extends Component
     public string $motifAttente = '';
 
     public string $motifRejet = '';
+
+    // 2026-10-30 — message facultatif de la relance manuelle.
+    public string $messageRelance = '';
 
     public string $commentaireCirculation = '';
 
@@ -131,85 +125,23 @@ class ShowCourrier extends Component
 
         $this->courrierId = $courrierId;
 
+        // 2026-10-30 — journal des consultations (conformité de l'archivage) :
+        // une ligne à l'ouverture de la fiche (mount() ne rejoue pas aux
+        // requêtes Livewire suivantes).
+        CourrierConsultation::enregistrer($courrierId, 'fiche');
+
         if (! in_array($this->ongletInitial, self::ONGLETS_VALIDES, true)) {
             $this->ongletInitial = 'general';
         }
 
-        // Module 6 — "affecte automatiquement au collaborateur le moins
-        // chargé" : présélection RÉELLE du premier (moins chargé) de la
-        // liste. Le commentaire de collaborateursDuService() ci-dessous
-        // prétendait déjà que "le premier de la liste est présélectionné
-        // dans la vue", mais rien ne le faisait réellement — le menu
-        // restait vide (placeholder), donc cliquer sur "Affecter" sans
-        // choisir manuellement quelqu'un déclenchait l'erreur de validation
-        // "Choisissez un collaborateur du service." — bug réel constaté par
-        // l'utilisateur le 2026-09-04, voir DECISIONS.md.
-        if ($courrier->statut === 'enregistre' && ($premier = $this->collaborateursDuService->first())) {
-            $this->collaborateurSelectionne = $premier['id'];
-        }
+        $this->preremplirAffectation();
 
-        // Délai proposé à l'affectation = SLA actuel du courrier (le sien,
-        // sinon celui de son type) : le responsable le garde ou l'ajuste.
-        if ($courrier->statut === 'enregistre') {
-            $this->delaiValeur = SlaCalculatorService::delaiJours($courrier->sla_jours, $courrier->type_document);
-        }
-
-        // Module 1/4 — présélection RÉELLE (pas seulement un commentaire qui
-        // le prétend, voir le bug corrigé ci-dessus pour l'affectation) : la
-        // proposition de Module 3 si elle existe, sinon le service saisi à
-        // l'enregistrement. 'en_cours_de_transfert', pas
-        // 'en_attente_de_transfert' (2026-09-15, voir DECISIONS.md,
-        // synchronisation SRS-GEC.pdf) — le panneau "Valider le service" du
-        // DGA n'a de sens qu'une fois la réceptionniste passée par
-        // "Transférer".
-        if ($courrier->statut === 'en_cours_de_transfert') {
-            $this->preselectionnerCascadeDepuisService($courrier->service_propose_id ?? $courrier->service_id);
-            $this->confidentialiteSelectionnee = $courrier->confidentialite;
-        }
-    }
-
-    // Retrouve, à partir d'un `services.id` réel (proposition Module 3 ou
-    // service déjà saisi), le nœud organization_units PONTÉ à ce service —
-    // s'il existe — et remonte ses ancêtres pour pré-remplir la cascade
-    // Site/Département/Service. Aucun nœud ponté trouvé = cascade vide,
-    // l'utilisateur choisit manuellement (aucune donnée fabriquée).
-    private function preselectionnerCascadeDepuisService(?int $serviceId): void
-    {
-        if ($serviceId === null) {
-            return;
-        }
-
-        $courant = OrganizationUnit::where('service_id', $serviceId)->first();
-
-        // Remonte $noeud lui-même PUIS ses ancêtres — un Département peut
-        // être directement ponté à un service (spec §1 : "un département
-        // peut avoir directement des utilisateurs sans service"), il faut
-        // alors le reconnaître comme tel, pas seulement ses ancêtres.
-        while ($courant !== null) {
-            match ($courant->type) {
-                OrganizationUnit::TYPE_SUB_SERVICE, OrganizationUnit::TYPE_SERVICE => $this->uniteSelectionneeId = $courant->id,
-                OrganizationUnit::TYPE_DEPARTMENT => $this->departementSelectionneId = $courant->id,
-                OrganizationUnit::TYPE_DIRECTION => $this->directionSelectionneeId = $courant->id,
-                OrganizationUnit::TYPE_SITE => $this->siteSelectionneId = $courant->id,
-                default => null,
-            };
-
-            $courant = $courant->parent;
-        }
-    }
-
-    // Cascade Site → Direction → Département → Service/Unité (spec §16,
-    // niveau Direction ajouté le 2026-10-09) — changer un niveau vide les
-    // niveaux dépendants, jamais un choix incohérent laissé affiché après
-    // un changement de niveau supérieur.
-    public function updated($nom): void
-    {
-        if ($nom === 'siteSelectionneId') {
-            $this->reset('directionSelectionneeId', 'departementSelectionneId', 'uniteSelectionneeId');
-        } elseif ($nom === 'directionSelectionneeId') {
-            $this->reset('departementSelectionneId', 'uniteSelectionneeId');
-        } elseif ($nom === 'departementSelectionneId') {
-            $this->reset('uniteSelectionneeId');
+        // Module 1/4 (2026-10-23) — transfert au service : la cascade est
+        // pré-remplie avec la proposition de classement (Module 3), l'agent
+        // la garde ou en choisit une autre. Rien de pré-rempli sans
+        // proposition (jamais une donnée inventée).
+        if ($courrier->statut === 'en_attente_de_transfert') {
+            $this->preselectionnerCascadeDepuisService($courrier->service_propose_id);
         }
     }
 
@@ -221,7 +153,6 @@ class ShowCourrier extends Component
         $courrier = Courrier::with([
             'service',
             'servicePropose',
-            'serviceResponsable',
             'regleClassement',
             'motsCles',
             'historiques.auteur',
@@ -236,6 +167,12 @@ class ShowCourrier extends Component
             'dossierClassement',
             // Module 9 — "Décharge" (2026-10-05).
             'dechargeActive.emprunteur',
+            // Module 1/4 — transfert au service (2026-10-23).
+            'dernierTransfert.service',
+            'dernierTransfert.transferePar',
+            'dernierTransfert.decidePar',
+            'dernierTransfert.originalRemisPar',
+            'dernierTransfert.receptionSigneePar',
         ])->findOrFail($this->courrierId);
 
         $this->authorize('view', $courrier);
@@ -257,6 +194,15 @@ class ShowCourrier extends Component
     public function peutAffecter(): bool
     {
         return Auth::user()?->can('affecter', $this->courrier) ?? false;
+    }
+
+    // 2026-10-29 — bouton « Affecter » de l'en-tête : seulement à l'étape
+    // « Accepté — à affecter », une fois la décharge remise et signée
+    // (CourrierPolicy::affecterPremiere()).
+    #[Computed]
+    public function peutAffecterPremiere(): bool
+    {
+        return Auth::user()?->can('affecterPremiere', $this->courrier) ?? false;
     }
 
     #[Computed]
@@ -298,19 +244,75 @@ class ShowCourrier extends Component
         return Auth::user()?->can('traiterTresorerie', $this->courrier) ?? false;
     }
 
-    // Module 1/4 — la réceptionniste clique "Transférer" (2026-09-15, voir
-    // DECISIONS.md, synchronisation SRS-GEC.pdf) : même principe que les
-    // autres peut*() ci-dessus.
+    // Module 1/4 — l'accueil transfère au service concerné (2026-10-23,
+    // voir DECISIONS.md "Transfert direct au service et acceptation") : même
+    // principe que les autres peut*() ci-dessus.
     #[Computed]
     public function peutTransferer(): bool
     {
         return Auth::user()?->can('transferer', $this->courrier) ?? false;
     }
 
+    // Le responsable du service destinataire accepte ou refuse.
     #[Computed]
-    public function peutValiderService(): bool
+    public function peutDeciderTransfert(): bool
     {
-        return Auth::user()?->can('validerService', $this->courrier) ?? false;
+        return Auth::user()?->can('accepterTransfert', $this->courrier) ?? false;
+    }
+
+    // Transmettre à une unité placée sous l'entité du courrier (ex. un
+    // département d'une Direction).
+    #[Computed]
+    public function peutTransmettre(): bool
+    {
+        return Auth::user()?->can('transmettre', $this->courrier) ?? false;
+    }
+
+    // Unités placées DIRECTEMENT sous l'entité du service de ce courrier,
+    // avec leur responsable — cibles possibles de "Transmettre". Seules les
+    // unités actives reliées à un service réel actif AVEC responsable sont
+    // retenues : sinon personne ne recevrait le courrier.
+    #[Computed]
+    public function unitesSubordonnees()
+    {
+        if ($this->courrier->service_id === null) {
+            return collect();
+        }
+
+        $entite = OrganizationUnit::where('service_id', $this->courrier->service_id)->first();
+
+        if ($entite === null) {
+            return collect();
+        }
+
+        return OrganizationUnit::query()
+            ->where('parent_id', $entite->id)
+            ->where('status', OrganizationUnit::STATUT_ACTIF)
+            ->whereHas('service', fn ($q) => $q->where('actif', true)->whereNotNull('responsable_id'))
+            ->with('service.responsable')
+            ->orderBy('name')
+            ->get();
+    }
+
+    #[Computed]
+    public function peutMarquerOriginalRemis(): bool
+    {
+        return Auth::user()?->can('marquerOriginalRemis', $this->courrier) ?? false;
+    }
+
+    // 2026-10-28 — signature électronique de la réception (cadre « Reçu par »).
+    #[Computed]
+    public function peutSignerReception(): bool
+    {
+        return Auth::user()?->can('signerReceptionOriginal', $this->courrier) ?? false;
+    }
+
+    // Contenu (aperçu, pièces jointes, OCR) masqué tant que le service n'a
+    // pas accepté — blocage côté serveur, voir CourrierPolicy::voirContenu().
+    #[Computed]
+    public function peutVoirContenu(): bool
+    {
+        return Auth::user()?->can('voirContenu', $this->courrier) ?? false;
     }
 
     // Module 1/9 (2026-09-24) — "Marquer comme remis" sur un pli
@@ -345,10 +347,36 @@ class ShowCourrier extends Component
 
         return collect([
             'reaffecter', 'soumettreValidation', 'validerDirectement', 'renvoyerCorrection', 'rejeter',
-            'mettreEnAttente', 'reprendre', 'validerClassement', 'gererMotsCles',
+            'mettreEnAttente', 'reprendre', 'relancer', 'validerClassement', 'gererMotsCles',
             'voirHistorique', 'voirTexteOcr', 'voirPiecesJointes', 'voirTraitementDocument',
-            'repondre', 'creerNote',
+            'repondre', 'creerNote', 'voirConsultations',
         ])->mapWithKeys(fn (string $abilite) => [$abilite => (bool) $user?->can($abilite, $courrier)])->all();
+    }
+
+    // 2026-10-30 — conformité de l'archivage (Module 9) : empreintes SHA-256
+    // du document principal et de sa copie PDF/A, pour la carte « Archivage
+    // et intégrité ».
+    #[Computed]
+    public function empreintes()
+    {
+        return EmpreinteFichier::query()
+            ->where('fichier_id', $this->courrierId)
+            ->whereIn('fichier_type', [EmpreinteFichier::TYPE_COURRIER, EmpreinteFichier::TYPE_COURRIER_PDFA])
+            ->get()->keyBy('fichier_type');
+    }
+
+    // Journal des consultations de ce courrier (courriers.voir_consultations).
+    #[Computed]
+    public function consultations()
+    {
+        if (! $this->droits['voirConsultations']) {
+            return collect();
+        }
+
+        return CourrierConsultation::query()->where('courrier_id', $this->courrierId)
+            ->with('utilisateur:id,name')
+            ->latest('created_at')->latest('id')
+            ->limit(50)->get();
     }
 
     // Un seul dossier par utilisateur non-gerer_tout : créateur, responsable,
@@ -388,15 +416,6 @@ class ShowCourrier extends Component
         return User::query()->orderBy('name')->get(['id', 'name']);
     }
 
-    // Module 1/4 — liste affichée dans la modale "Transférer à" : curatée
-    // par l'administrateur pour CET utilisateur précis (voir DECISIONS.md
-    // "Destinataires de transfert"), pas dérivée d'un profil/privilège.
-    #[Computed]
-    public function destinatairesTransfert()
-    {
-        return Auth::user()->destinatairesTransfert()->orderBy('name')->get(['users.id', 'users.name']);
-    }
-
     // Collaborateurs du service du courrier, triés par charge de travail
     // croissante (Module 6 — "affecte automatiquement au collaborateur le
     // moins chargé") : le premier de la liste est présélectionné dans la vue,
@@ -423,91 +442,18 @@ class ShowCourrier extends Component
         // profils sélectionnables ; reste sans effet pour qui n'a pas le
         // privilège (revérifié par CourrierPolicy::traiter() au moment
         // d'agir, Règle n°6 — ce composant ne fait que le rendre choisissable).
+        // 2026-10-29 (« remove responsable from that list of collaborateur »)
+        // — retiré de nouveau : le responsable s'affecte désormais le
+        // courrier par « Me l'affecter et commencer » (même modale), la liste
+        // ne montre plus que les collaborateurs.
         return User::query()
             ->where('service_id', $this->courrier->service_id)
-            ->whereHas('profil', fn ($q) => $q->whereIn('nom', ['Collaborateur', 'Responsable de service']))
+            ->whereHas('profil', fn ($q) => $q->where('nom', 'Collaborateur'))
             ->orderBy('name')
             ->get(['id', 'name'])
             ->map(fn (User $u) => ['id' => $u->id, 'name' => $u->name, 'charge' => $charge[$u->id] ?? 0])
             ->sortBy('charge')
             ->values();
-    }
-
-    // Module "Organisation" v2 (2026-09-22, spec §16) — cascade Site →
-    // Département → Service/Unité pour le panneau "Valider le service"
-    // (DGA/ADJ), remplace l'ancien sélecteur plat unique. Chaque niveau ne
-    // charge que les enfants actifs du niveau au-dessus (voir
-    // OrganizationUnit::enfantsActifsDe()).
-    #[Computed]
-    public function sitesDisponibles()
-    {
-        return OrganizationUnit::query()
-            ->where('type', OrganizationUnit::TYPE_SITE)
-            ->where('status', OrganizationUnit::STATUT_ACTIF)
-            ->orderBy('name')
-            ->get();
-    }
-
-    // 2026-10-09 — niveau Direction (OrganizationUnit::TYPE_DIRECTION),
-    // enfant direct du Site, OPTIONNEL comme le reste de la cascade.
-    #[Computed]
-    public function directionsDisponibles()
-    {
-        return OrganizationUnit::enfantsActifsDe($this->siteSelectionneId, OrganizationUnit::TYPE_DIRECTION);
-    }
-
-    #[Computed]
-    public function departementsDisponibles()
-    {
-        // 2026-09-23, clarification explicite de l'utilisateur : le Site est
-        // OPTIONNEL (des Départements réels existent déjà en base sans
-        // aucun Site au-dessus, ex. "Direction des Sinistres", en attendant
-        // le vrai nom du/des site(s) réel(s) — jamais fabriqué). Aucun
-        // retour anticipé ici : $this->siteSelectionneId === null est un
-        // parent_id valide (racine), enfantsActifsDe() le gère nativement
-        // (where('parent_id', null) → whereNull, comportement standard
-        // Eloquent) — pas un cas d'erreur à filtrer. 2026-10-09 — Direction
-        // AUSSI optionnelle : si choisie, le Département en dépend ; sinon
-        // on reste directement sous le Site.
-        $parentId = $this->directionSelectionneeId ?? $this->siteSelectionneId;
-
-        return OrganizationUnit::enfantsActifsDe($parentId, OrganizationUnit::TYPE_DEPARTMENT);
-    }
-
-    // Niveau "Service/Unité" — optionnel (spec §1 : un Département peut
-    // recevoir directement des courriers sans Service en dessous). Inclut
-    // service ET sub_service : un Sous-service ponté à un vrai service peut
-    // aussi être choisi comme destination finale.
-    #[Computed]
-    public function unitesDisponibles()
-    {
-        if ($this->departementSelectionneId === null) {
-            return collect();
-        }
-
-        return OrganizationUnit::query()
-            ->where('parent_id', $this->departementSelectionneId)
-            ->whereIn('type', [OrganizationUnit::TYPE_SERVICE, OrganizationUnit::TYPE_SUB_SERVICE])
-            ->where('status', OrganizationUnit::STATUT_ACTIF)
-            ->orderBy('name')
-            ->get();
-    }
-
-    // Nœud RÉELLEMENT retenu pour la résolution finale : le Service/
-    // Sous-service choisi s'il y en a un, sinon le Département lui-même
-    // (spec §1 — un Département peut être la destination finale). Null si
-    // rien n'est encore choisi.
-    private function uniteFinale(): ?OrganizationUnit
-    {
-        if ($this->uniteSelectionneeId) {
-            return OrganizationUnit::find($this->uniteSelectionneeId);
-        }
-
-        if ($this->departementSelectionneId) {
-            return OrganizationUnit::find($this->departementSelectionneId);
-        }
-
-        return null;
     }
 
     // Maquette "Détail du courrier" (2026-09-18, demande explicite de
@@ -520,9 +466,9 @@ class ShowCourrier extends Component
     // (les deux signifient "Clôture" atteinte) — pas une 7e étape distincte.
     // Les clés du tableau ci-dessous sont des étapes CONCEPTUELLES, pas
     // toujours identiques au statut brut en base : 'enregistre' seul est
-    // ambigu (il désigne aussi bien "juste créé, jamais transféré" — sortant
-    // ou sinistre auto-routé, voir RegistrationForm::enregistrer() — que
-    // "transfert validé par la DGA" — WorkflowService::validerService())
+    // ambigu (il désigne aussi bien "juste créé, jamais transféré" — courrier
+    // sortant — que "transfert accepté par le service" —
+    // WorkflowService::accepterTransfert(), 2026-10-23)
     // donc traité comme équivalent à "Transfert atteint" dans les deux cas
     // (jamais un courrier n'est "orphelin" entre Création et Transfert).
     // Chaque étape atteinte affiche la date RÉELLE de l'entrée d'historique
@@ -538,12 +484,29 @@ class ShowCourrier extends Component
     {
         $etapes = [
             'creation' => ['libelle' => __('Création'), 'action' => 'creation'],
-            'transfert' => ['libelle' => __('Transfert'), 'action' => 'service_valide_dga'],
+            // 2026-10-23 — franchie quand le service ACCEPTE le transfert ;
+            // 'service_valide_dga' reste reconnu pour les courriers validés
+            // par la DGA avant la fin de ce routage.
+            'transfert' => ['libelle' => __('Transfert'), 'action' => ['transfert_accepte', 'service_valide_dga']],
             'affecte' => ['libelle' => __('Affectation'), 'action' => 'affectation'],
             'en_traitement' => ['libelle' => __('Traitement'), 'action' => 'traitement_demarre'],
             'en_validation' => ['libelle' => __('Réponse'), 'action' => 'soumis_validation'],
             'traite' => ['libelle' => __('Clôture'), 'action' => 'validation_acceptee'],
         ];
+
+        // 2026-10-30 (« since it is the responsable doing the traitement and
+        // not the collaborateur, is this circuit good representing it ») —
+        // quand le chef du service traite lui-même : « Prise en charge » (il
+        // ne s'est pas fait affecter le courrier, il l'a pris) et pas de
+        // « Réponse » (« Valider directement » clôt sans soumission).
+        $chefTraiteLuiMeme = $this->courrier->affectationCourante !== null
+            && $this->courrier->affectationCourante->user_id === $this->courrier->service?->responsable_id;
+
+        if ($chefTraiteLuiMeme) {
+            $etapes['affecte']['libelle'] = __('Prise en charge');
+            $etapes['affecte']['precision'] = __('par le :titre', ['titre' => mb_strtolower($this->courrier->service->titreChef())]);
+            unset($etapes['en_validation']);
+        }
 
         $ordre = array_keys($etapes);
 
@@ -571,6 +534,11 @@ class ShowCourrier extends Component
             'en_attente_signature_dg', 'en_attente_tresorerie' => 'en_validation',
             default => $this->courrier->statut,
         };
+
+        // Sans étape « Réponse », ce qui y menait reste sur « Traitement ».
+        if ($chefTraiteLuiMeme && $statutEffectif === 'en_validation') {
+            $statutEffectif = 'en_traitement';
+        }
 
         $indexActuel = array_search($statutEffectif, $ordre, true);
 
@@ -602,13 +570,15 @@ class ShowCourrier extends Component
             // (2026-09-24, WorkflowService::cloturerConfidentiel()), pas par
             // une validation hiérarchique.
             $dateAtteinte = $atteinte
-                ? ($this->courrier->historiques->firstWhere('action', $definition['action'])
+                ? ($this->courrier->historiques->first(fn ($entree) => in_array($entree->action, (array) $definition['action'], true))
                     ?? ($statut === 'traite' ? $this->courrier->historiques->firstWhere('action', 'confidentiel_remis') : null))?->created_at
                 : null;
 
             $resultat[] = [
                 'statut' => $statut,
                 'libelle' => $definition['libelle'],
+                // Ligne facultative sous la date (ex. « par le responsable »).
+                'precision' => $definition['precision'] ?? null,
                 'atteinte' => $atteinte,
                 'courante' => $courante,
                 // Sous-libellé affiché sous l'étape : date réelle si
@@ -650,6 +620,7 @@ class ShowCourrier extends Component
             'creation' => 'creation',
             'transfert' => 'transfert',
             'service_valide_dga' => 'transfert',
+            'transfert_accepte' => 'transfert',
             'affectation' => 'affecte',
             'reaffectation' => 'affecte',
             'traitement_demarre' => 'en_traitement',
@@ -672,7 +643,7 @@ class ShowCourrier extends Component
     // courier work live in real time at each step" — WorkflowService diffuse
     // `statut.change` sur le même canal privé que ocrTermine()/
     // classementPropose() ci-dessous à chaque transition réelle (affecter/
-    // transferer/validerService/toute transition simple), pour que la fiche
+    // transfert/acceptation/refus/toute transition simple), pour que la fiche
     // ouverte dans un AUTRE onglet/session (un collègue qui affecte/traite le
     // même courrier) se mette à jour sans rechargement manuel — pas
     // seulement pour l'auteur de l'action lui-même (qui voit déjà la mise à
@@ -690,18 +661,26 @@ class ShowCourrier extends Component
             $this->etapesParcours,
             $this->peutModifier,
             $this->peutAffecter,
+            $this->peutAffecterPremiere,
+            $this->peutTraiterMoiMeme,
             $this->peutTraiter,
             $this->peutValider,
             $this->peutEnvoyerSignatureDg,
             $this->peutSignerDg,
             $this->peutTraiterTresorerie,
             $this->peutTransferer,
-            $this->peutValiderService,
+            $this->peutDeciderTransfert,
+            $this->peutMarquerOriginalRemis,
+            $this->peutSignerReception,
+            $this->peutVoirContenu,
+            $this->peutTransmettre,
+            $this->unitesSubordonnees,
             $this->peutCloturerConfidentiel,
             $this->peutFixerDelai,
             $this->collaborateursDuService,
-            $this->destinatairesTransfert,
         );
+
+        $this->preremplirAffectation();
 
         Flux::toast(text: __('Ce courrier a été mis à jour par un autre utilisateur — la fiche vient d\'être actualisée.'));
     }
@@ -848,23 +827,6 @@ class ShowCourrier extends Component
         unset($this->courrier);
     }
 
-    // 2026-10-13, retour utilisateur ("je ne peut pa mettre un delais") —
-    // le bouton de l'en-tête n'a aucun champ délai à proximité (contrairement
-    // au bloc "Affecter" plus bas) : ouvre une modale dédiée avec son PROPRE
-    // délai, préremplie avec le même SLA par défaut que mount() utilise pour
-    // l'affectation normale, plutôt que de dépendre silencieusement d'une
-    // valeur déjà saisie ailleurs sur la page (ou pas saisie du tout).
-    public function ouvrirTraiterMoiMeme(): void
-    {
-        $this->authorize('traiterMoiMeme', $this->courrier);
-
-        $this->delaiValeur = SlaCalculatorService::delaiJours($this->courrier->sla_jours, $this->courrier->type_document);
-        $this->delaiUnite = 'jours';
-        $this->resetErrorBag(['delaiValeur', 'delaiUnite']);
-
-        Flux::modal('traiter-moi-meme-modal')->show();
-    }
-
     // 2026-10-13, demande explicite de l'utilisateur ("isnt the another way
     // to that without selecting his name") — raccourci "Traiter moi-même" :
     // s'auto-affecte ET démarre le traitement en une seule action, sans
@@ -873,6 +835,9 @@ class ShowCourrier extends Component
     // garde-fou Règle n°6 que affecter() : courrierPour() revérifie
     // l'autorisation serveur (CourrierPolicy::traiterMoiMeme()) avant
     // d'agir, jamais déduite de la simple visibilité du bouton.
+    // 2026-10-29 — n'a plus de bouton ni de modale à part : c'est le choix
+    // « Me l'affecter et commencer » de la modale « Affecter » (affecter()
+    // ci-dessous), même délai préempli (mount()).
     public function traiterMoiMeme(WorkflowService $workflow): void
     {
         $courrier = $this->courrierPour('traiterMoiMeme');
@@ -883,7 +848,7 @@ class ShowCourrier extends Component
             $this->validerDelai();
         }
 
-        $reussi = $this->executer(function () use ($workflow, $courrier, $avecDelai) {
+        $this->executer(function () use ($workflow, $courrier, $avecDelai) {
             $workflow->affecter($courrier, Auth::user(), Auth::user());
 
             if ($avecDelai) {
@@ -892,18 +857,23 @@ class ShowCourrier extends Component
 
             $workflow->demarrerTraitement($courrier->fresh(), Auth::user());
         }, __('Courrier affecté et traitement démarré.'));
-
-        if ($reussi) {
-            Flux::modal('traiter-moi-meme-modal')->close();
-        }
     }
 
     // Module 6 — première affectation. Le collaborateur choisi doit
     // appartenir au service du courrier (vérifié ici, jamais fait confiance
     // à l'ID posté — Règle n°6, même si la liste affichée est déjà filtrée).
+    // 2026-10-29 — seulement une fois la décharge remise et signée
+    // (CourrierPolicy::affecterPremiere()) ; « Me l'affecter et commencer »
+    // passe par traiterMoiMeme() et ses propres contrôles.
     public function affecter(WorkflowService $workflow): void
     {
-        $courrier = $this->courrierPour('affecter');
+        if ($this->modeAffectation === 'moi') {
+            $this->traiterMoiMeme($workflow);
+
+            return;
+        }
+
+        $courrier = $this->courrierPour('affecterPremiere');
         $collaborateur = $this->collaborateurDuServiceOuEchec($courrier);
 
         if (! $collaborateur) {
@@ -952,77 +922,116 @@ class ShowCourrier extends Component
         return $this->delaiValeur * ($this->delaiUnite === 'heures' ? 60 : 24 * 60);
     }
 
-    // Module 1/4 — la réceptionniste clique "Transférer" pour envoyer
-    // explicitement le courrier au DGA/ADJ DGA (2026-09-15, voir DECISIONS.md,
-    // synchronisation SRS-GEC.pdf) — plus d'envoi automatique et silencieux
-    // à l'enregistrement. Mise à jour (2026-09-15) : elle choisit désormais
-    // QUI, dans la modale "Transférer à" — le choix est revérifié contre
-    // ses destinataires autorisés, jamais fait confiance à l'ID posté
-    // (Règle n°6).
+    // Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au service
+    // et acceptation") — l'accueil transfère directement au service choisi
+    // dans la cascade (plus de DGA). Le service retenu est revérifié côté
+    // serveur (pont Organisation, service actif avec un responsable) —
+    // jamais fait confiance aux identifiants postés (Règle n°6).
     public function transferer(WorkflowService $workflow): void
     {
         $courrier = $this->courrierPour('transferer');
-        $destinataire = $this->destinataireAutoriseOuEchec();
+        $service = $this->serviceChoisiOuEchec();
 
-        if (! $destinataire) {
+        if (! $service) {
             return;
         }
 
-        $this->executer(fn () => $workflow->transferer($courrier, $destinataire, Auth::user()), __('Courrier transféré à :nom.', ['nom' => $destinataire->name]));
+        $reussi = $this->executer(
+            fn () => $workflow->transfererAuService($courrier, $service, Auth::user()),
+            __('Courrier transféré au service :nom — en attente de son acceptation.', ['nom' => $service->nom]),
+        );
+
+        if ($reussi) {
+            Flux::modal('transferer-modal')->close();
+        }
     }
 
-    // Module 1/4 — DGA/ADJ confirme ou change le service d'un courrier
-    // entrant non-sinistre, demande explicite de l'utilisateur (2026-09-08).
-    // Module "Organisation" v2 (2026-09-22, spec §16) — la cascade
-    // Site/Département/Service résout un nœud organization_units, mais
-    // WorkflowService::validerService() continue de recevoir un VRAI
-    // `services.id` (via le pont OrganizationUnit::service_id) — aucune
-    // modification de WorkflowService/segmentClassement (Règle n°6 : jamais
-    // fait confiance à l'ID posté, même la cascade est revérifiée ici).
-    public function validerService(WorkflowService $workflow): void
+    // Le responsable du service destinataire accepte : numéro de décharge,
+    // contenu désormais visible, agent prévenu qu'il peut remettre l'original.
+    public function accepterTransfert(WorkflowService $workflow): void
     {
-        $courrier = $this->courrierPour('validerService');
+        $courrier = $this->courrierPour('accepterTransfert');
 
-        if (! $this->departementSelectionneId && ! $this->uniteSelectionneeId) {
-            $this->addError('uniteSelectionneeId', __('Choisissez un département (et, si besoin, un service).'));
+        $reussi = $this->executer(
+            fn () => $workflow->accepterTransfert($courrier, Auth::user()),
+            __('Courrier accepté — l\'accueil est prévenu qu\'il peut vous remettre l\'original.'),
+        );
+
+        if ($reussi) {
+            Flux::modal('accepter-transfert-modal')->close();
+        }
+    }
+
+    // Refus motivé : le courrier retourne à l'accueil, sans service. Le
+    // responsable perd alors normalement l'accès à la fiche — redirigé
+    // plutôt que de voir une page 403 juste après un succès.
+    public function refuserTransfert(WorkflowService $workflow): void
+    {
+        $courrier = $this->courrierPour('refuserTransfert');
+
+        $this->validate(['motifRefusTransfert' => ['required', 'string', 'min:5', 'max:500']], [], ['motifRefusTransfert' => __('motif')]);
+
+        $reussi = $this->executer(
+            fn () => $workflow->refuserTransfert($courrier, Auth::user(), $this->motifRefusTransfert),
+            __('Courrier refusé — renvoyé à l\'accueil pour être réorienté.'),
+        );
+
+        if ($reussi) {
+            Flux::modal('refuser-transfert-modal')->close();
+
+            if (Auth::user()->cannot('view', $courrier->fresh())) {
+                $this->redirect(route('dashboard'), navigate: true);
+            }
+        }
+    }
+
+    // 2026-10-23 — le responsable d'une entité (ex. une Direction) transmet
+    // le courrier accepté à l'une de ses unités ; son chef le reçoit "À
+    // affecter". L'unité postée est revérifiée parmi les unités réellement
+    // rattachées (Règle n°6). Le transmetteur garde la consultation (voir
+    // User::idsServicesSupervises()) : pas de redirection nécessaire.
+    public function transmettre(WorkflowService $workflow): void
+    {
+        $courrier = $this->courrierPour('transmettre');
+        $unite = $this->unitesSubordonnees->firstWhere('id', $this->uniteTransmissionId);
+
+        if ($unite === null) {
+            $this->addError('uniteTransmissionId', __('Choisissez une unité rattachée à la vôtre.'));
 
             return;
         }
 
-        $unite = $this->uniteFinale();
+        $this->executer(
+            fn () => $workflow->transmettreAUnite($courrier, $unite->service, Auth::user()),
+            __('Courrier transmis à :unite (:chef).', ['unite' => $unite->name, 'chef' => $unite->service->responsable?->name]),
+        );
+    }
 
-        // Une unité restée en mémoire d'un choix précédent (sélecteur masqué
-        // puis ré-affiché, requête différée) ne doit jamais l'emporter sur le
-        // département affiché — constaté le 2026-09-23 : courrier validé vers
-        // "Sinistre Santé" alors que l'écran montrait "Departement Informatique".
-        if ($unite && $this->uniteSelectionneeId && $this->departementSelectionneId
-            && $unite->parent_id !== $this->departementSelectionneId) {
-            $this->reset('uniteSelectionneeId');
-            $this->addError('uniteSelectionneeId', __('La sélection a changé — vérifiez le département et le service, puis confirmez à nouveau.'));
+    // L'accueil a remis l'original papier au service qui l'a accepté.
+    public function marquerOriginalRemis(WorkflowService $workflow): void
+    {
+        $courrier = $this->courrierPour('marquerOriginalRemis');
 
-            return;
+        $reussi = $this->executer(
+            fn () => $workflow->marquerOriginalRemis($courrier, Auth::user()),
+            __('Original papier marqué comme remis au service.'),
+        );
+
+        if ($reussi) {
+            Flux::modal('remise-original-modal')->close();
         }
+    }
 
-        if (! $unite || ! $unite->service_id) {
-            $this->addError('uniteSelectionneeId', __('Choisissez une entité déjà reliée à un service réel (configurez le lien depuis Organisation si besoin).'));
+    // 2026-10-28 (« mettre le nom comme signature au cas où on ne veut pas
+    // imprimer ») — le service signe la réception de l'original dans GEC.
+    public function signerReceptionOriginal(WorkflowService $workflow): void
+    {
+        $courrier = $this->courrierPour('signerReceptionOriginal');
 
-            return;
-        }
-
-        $service = $unite->service;
-
-        $this->validate(['confidentialiteSelectionnee' => ['required', 'integer', 'between:1,'.User::niveauConfidentialiteMax()]]);
-
-        $reussi = $this->executer(fn () => $workflow->validerService($courrier, $service->id, $this->confidentialiteSelectionnee, Auth::user()), __('Service confirmé : :nom.', ['nom' => $service->nom]));
-
-        // Une fois le service validé, le courrier quitte "en cours de
-        // transfert" : le DGA perd normalement le droit de le consulter
-        // (voir CourrierPolicy::view(), branche voir_dga) — sans cette
-        // redirection, le re-rendu affichait une page 403 juste après un
-        // succès, donnant l'impression que l'action avait échoué.
-        if ($reussi && Auth::user()->cannot('view', $courrier->fresh())) {
-            $this->redirect(route('courriers.rechercher', ['statut' => CourrierList::STATUT_ACTIFS]), navigate: true);
-        }
+        $this->executer(
+            fn () => $workflow->signerReceptionOriginal($courrier, Auth::user()),
+            __('Réception de l\'original signée — votre nom figure sur la décharge.'),
+        );
     }
 
     // Module 3/9 — ouvre la modale, pré-remplie avec le dossier actuel s'il
@@ -1240,6 +1249,18 @@ class ShowCourrier extends Component
         $this->executer(fn () => $workflow->mettreEnAttente($courrier, Auth::user(), $this->motifAttente), __('Courrier mis en attente d\'information.'), 'warning');
     }
 
+    // 2026-10-30 (Module 7) — relance manuelle de la personne affectée.
+    public function relancer(WorkflowService $workflow): void
+    {
+        $courrier = $this->courrierPour('relancer');
+
+        $this->validate(['messageRelance' => ['nullable', 'string', 'max:500']], [], ['messageRelance' => __('message de la relance')]);
+
+        $nom = $courrier->affectationCourante?->collaborateur?->name;
+
+        $this->executer(fn () => $workflow->relancer($courrier, Auth::user(), trim($this->messageRelance) ?: null), __('Relance envoyée à :nom.', ['nom' => $nom]));
+    }
+
     public function reprendre(WorkflowService $workflow): void
     {
         $courrier = $this->courrierPour('reprendre');
@@ -1280,6 +1301,9 @@ class ShowCourrier extends Component
         } catch (RuntimeException $e) {
             report($e);
             unset($this->courrier);
+            // 2026-10-28 — chaque action du circuit passe par une modale
+            // (<x-circuit.modale>) : refermée pour montrer la fiche actualisée.
+            Flux::modals()->close();
             Flux::toast(variant: 'danger', text: __('Action impossible : la fiche a changé entre-temps, elle vient d\'être actualisée.'));
 
             return false;
@@ -1287,6 +1311,7 @@ class ShowCourrier extends Component
 
         $this->reinitialiserCirculation();
 
+        Flux::modals()->close();
         Flux::toast(variant: $variantSucces, text: $messageSucces);
 
         return true;
@@ -1297,11 +1322,12 @@ class ShowCourrier extends Component
         // 2026-10-13 — même correctif que collaborateursDuService() ci-dessus
         // (liste affichée), gardé synchronisé : "Responsable de service"
         // ajouté ici aussi, sinon ce garde-fou Règle n°6 rejette un choix
-        // pourtant valide dans la liste affichée.
+        // pourtant valide dans la liste affichée. 2026-10-29 — retiré des
+        // deux côtés (voir collaborateursDuService()).
         $collaborateur = User::query()
             ->where('id', $this->collaborateurSelectionne)
             ->where('service_id', $courrier->service_id)
-            ->whereHas('profil', fn ($q) => $q->whereIn('nom', ['Collaborateur', 'Responsable de service']))
+            ->whereHas('profil', fn ($q) => $q->where('nom', 'Collaborateur'))
             ->first();
 
         if (! $collaborateur) {
@@ -1311,44 +1337,64 @@ class ShowCourrier extends Component
         return $collaborateur;
     }
 
-    // Module 1/4 — même principe que collaborateurDuServiceOuEchec() :
-    // jamais fait confiance à l'ID posté, même si la liste affichée dans la
-    // modale vient déjà de $this->destinatairesTransfert (Règle n°6).
-    private function destinataireAutoriseOuEchec(): ?User
-    {
-        $destinataire = Auth::user()->destinatairesTransfert()->where('users.id', $this->destinataireTransfertChoisi)->first();
-
-        if (! $destinataire) {
-            $this->addError('destinataireTransfertChoisi', __('Choisissez un destinataire.'));
-        }
-
-        return $destinataire;
-    }
-
     private function reinitialiserCirculation(): void
     {
-        $this->reset('collaborateurSelectionne', 'siteSelectionneId', 'directionSelectionneeId', 'departementSelectionneId', 'uniteSelectionneeId', 'confidentialiteSelectionnee', 'destinataireTransfertChoisi', 'motifReaffectation', 'motifRenvoi', 'motifAttente', 'motifRejet', 'commentaireCirculation', 'delaiValeur', 'delaiUnite', 'motifDelai');
+        $this->reset('collaborateurSelectionne', 'modeAffectation', 'motifRefusTransfert', 'uniteTransmissionId', 'motifReaffectation', 'motifRenvoi', 'motifAttente', 'motifRejet', 'messageRelance', 'commentaireCirculation', 'delaiValeur', 'delaiUnite', 'motifDelai');
+        $this->reinitialiserCascade();
         unset(
             $this->courrier,
             $this->etapesParcours,
             $this->peutModifier,
             $this->peutAffecter,
+            $this->peutAffecterPremiere,
+            $this->peutTraiterMoiMeme,
             $this->peutTraiter,
             $this->peutValider,
             $this->peutEnvoyerSignatureDg,
             $this->peutSignerDg,
             $this->peutTraiterTresorerie,
             $this->peutTransferer,
-            $this->peutValiderService,
+            $this->peutDeciderTransfert,
+            $this->peutMarquerOriginalRemis,
+            $this->peutSignerReception,
+            $this->peutVoirContenu,
+            $this->peutTransmettre,
+            $this->unitesSubordonnees,
             $this->peutCloturerConfidentiel,
             $this->peutFixerDelai,
             $this->collaborateursDuService,
-            $this->destinatairesTransfert,
-            $this->sitesDisponibles,
-            $this->directionsDisponibles,
-            $this->departementsDisponibles,
-            $this->unitesDisponibles,
         );
+
+        $this->preremplirAffectation();
+    }
+
+    // Module 6 — "affecte automatiquement au collaborateur le moins
+    // chargé" : présélection RÉELLE du premier (moins chargé) de la liste
+    // (bug réel du 2026-09-04, voir DECISIONS.md), et délai proposé = SLA
+    // actuel du courrier (le sien, sinon celui de son type), que le
+    // responsable garde ou ajuste.
+    // 2026-10-30 — bug réel (capture : « Choisissez un collaborateur du
+    // service. » alors que le menu affichait « Collaborateur Trésorerie »)
+    // : la présélection n'avait lieu qu'au mount(). Toute action de la fiche
+    // (ex. « Signer la réception », juste avant « Affecter ») la remettait à
+    // vide via reinitialiserCirculation() ; le menu, dont l'option « Choisir
+    // un collaborateur » est désactivée, montrait alors le premier nom sans
+    // qu'aucune valeur ne soit envoyée. Rejouée après chaque action et
+    // chaque mise à jour par un autre utilisateur, sans écraser un choix
+    // déjà fait.
+    private function preremplirAffectation(): void
+    {
+        if ($this->courrier->statut !== 'enregistre') {
+            return;
+        }
+
+        if ($this->collaborateurSelectionne === null && ($premier = $this->collaborateursDuService->first())) {
+            $this->collaborateurSelectionne = $premier['id'];
+        }
+
+        if ($this->delaiValeur === null) {
+            $this->delaiValeur = SlaCalculatorService::delaiJours($this->courrier->sla_jours, $this->courrier->type_document);
+        }
     }
 
     // Règle n°6 — droits revérifiés à chaque action, jamais déduits de l'état client.

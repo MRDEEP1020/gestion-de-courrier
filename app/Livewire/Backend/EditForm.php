@@ -2,6 +2,7 @@
 
 namespace App\Livewire\Backend;
 
+use App\Concerns\AjoutPiecesJointes;
 use App\Jobs\IndexCourrierJob;
 use App\Livewire\Backend\Forms\CourrierForm;
 use App\Models\Courrier;
@@ -20,6 +21,8 @@ use Livewire\WithFileUploads;
 #[Title('Modifier un courrier')]
 class EditForm extends Component
 {
+    // Plusieurs pièces jointes ajoutables d'un coup (2026-10-23).
+    use AjoutPiecesJointes;
     use WithFileUploads;
 
     // Propriété : ID primitif uniquement (pas de modèle Eloquent complet) — Règle n°2.
@@ -28,12 +31,6 @@ class EditForm extends Component
     public CourrierForm $form;
 
     public string $numeroReference = '';
-
-    // Exception à la Règle n°2 : mécanisme d'upload natif de Livewire (voir
-    // RegistrationForm). Une pièce jointe de plus est toujours ajoutable — la
-    // table `pieces_jointes` est un-à-plusieurs, contrairement à l'ancien
-    // `fichier_path` unique (voir ARCHITECTURE.md).
-    public $pieceJointe = null;
 
     // Module 1 — voir RegistrationForm::$typeDocumentPersonnalise (même
     // raison ici : un courrier déjà enregistré avant l'introduction de la
@@ -71,7 +68,9 @@ class EditForm extends Component
 
     public ?int $slaJours = null;
 
-    public ?int $serviceResponsableId = null;
+    // 2026-10-30 — « Service responsable » retiré (fiche et formulaire) :
+    // jamais renseigné par le circuit, il doublait le service destinataire.
+    // La colonne courriers.service_responsable_id reste en base, intacte.
 
     public ?string $referenceExterne = null;
 
@@ -110,7 +109,6 @@ class EditForm extends Component
         $this->noteInterne = $courrier->note_interne;
         $this->dossierReference = $courrier->dossier_reference;
         $this->slaJours = $courrier->sla_jours;
-        $this->serviceResponsableId = $courrier->service_responsable_id;
         $this->referenceExterne = $courrier->reference_externe;
 
         $this->typeDocumentPersonnalise = $this->form->type_document !== ''
@@ -179,11 +177,10 @@ class EditForm extends Component
             'noteInterne' => ['nullable', 'string', 'max:1000'],
             'dossierReference' => ['nullable', 'string', 'max:255'],
             'slaJours' => ['nullable', 'integer', 'min:0', 'max:365'],
-            'serviceResponsableId' => ['nullable', 'integer', 'exists:services,id'],
             'referenceExterne' => ['nullable', 'string', 'max:255'],
-            'pieceJointe' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png', 'max:10240'],
+            ...$this->reglesPiecesJointes(),
         ]);
-        unset($donneesSupplementaires['pieceJointe']);
+        unset($donneesSupplementaires['piecesJointes']);
 
         $data = array_merge($data, [
             'direction_origine_id' => $donneesSupplementaires['directionOrigineId'],
@@ -193,7 +190,6 @@ class EditForm extends Component
             'note_interne' => $donneesSupplementaires['noteInterne'],
             'dossier_reference' => $donneesSupplementaires['dossierReference'],
             'sla_jours' => $donneesSupplementaires['slaJours'],
-            'service_responsable_id' => $donneesSupplementaires['serviceResponsableId'],
             'reference_externe' => $donneesSupplementaires['referenceExterne'],
         ]);
 
@@ -236,16 +232,10 @@ class EditForm extends Component
             IndexCourrierJob::dispatch($courrier)->onQueue('indexation');
         }
 
-        $avertissementPieceJointe = null;
-
-        if ($this->pieceJointe) {
-            try {
-                $pieceJointeService->attacher($courrier, $this->pieceJointe, Auth::id());
-            } catch (\Throwable $e) {
-                report($e);
-                $avertissementPieceJointe = __('Courrier mis à jour, mais la pièce jointe n\'a pas pu être stockée (stockage indisponible).');
-            }
-        }
+        $echecs = $this->attacherPiecesJointes($courrier, $pieceJointeService);
+        $avertissementPieceJointe = $echecs > 0
+            ? __('Courrier mis à jour, mais :n pièce(s) jointe(s) n\'ont pas pu être stockée(s) (stockage indisponible).', ['n' => $echecs])
+            : null;
 
         Flux::toast(
             variant: $avertissementPieceJointe ? 'warning' : 'success',

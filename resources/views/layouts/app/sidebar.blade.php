@@ -122,7 +122,10 @@
             $u = auth()->user();
             $menu = [
                 'tableau_de_bord' => $u->hasPrivilege('dashboard.voir'),
-                'courriers_tous' => $u->can('rechercher', App\Models\Courrier::class),
+                // 2026-10-30 — « Mes courriers » au menu ; « Tous les courriers »
+                // a sa propre clé de menu (l'Agent garde la recherche sans l'entrée).
+                'courriers_mes' => $u->can('voirMesCourriers', App\Models\Courrier::class),
+                'courriers_tous' => $u->can('rechercher', App\Models\Courrier::class) && $u->hasPrivilege('courriers.menu_tous_les_courriers'),
                 'courriers_calendrier' => $u->can('calendrier', App\Models\Courrier::class),
                 'courriers_nouveau' => $u->can('create', App\Models\Courrier::class),
                 'courriers_numeriser' => $u->can('numeriser', App\Models\Courrier::class),
@@ -140,7 +143,6 @@
                 'admin_workflows' => $u->hasPrivilege('administration.workflows'),
                 'admin_sla' => $u->hasPrivilege('administration.sla'),
                 'admin_dossier_surveille' => $u->hasPrivilege('administration.dossier_surveille'),
-                'admin_delegation_dga' => $u->hasPrivilege('administration.delegation_dga'),
                 'admin_audit' => $u->hasPrivilege('administration.audit'),
                 'stats_dashboard' => $u->hasPrivilege('statistiques.consulter'),
                 'stats_rapports' => $u->hasPrivilege('statistiques.rapports'),
@@ -188,8 +190,14 @@ $compteurNotificationsNonLues = $menu['notifications'] ? $u->unreadNotifications
             <ui-disclosure-group exclusive>
                 @if ($groupe('courriers_'))
                     <flux:sidebar.group :heading="__('Courriers')" expandable
-                        :expanded="request()->routeIs(['courriers.rechercher', 'courriers.nouveau', 'courriers.confidentiel', 'courriers.numeriser-nouveau', 'courriers.calendrier']) && request()->query('sens') === null"
+                        :expanded="request()->routeIs(['courriers.mes-courriers', 'courriers.rechercher', 'courriers.nouveau', 'courriers.confidentiel', 'courriers.numeriser-nouveau', 'courriers.calendrier']) && request()->query('sens') === null"
                         icon="envelope" class="grid">
+                        @if ($menu['courriers_mes'])
+                            <flux:sidebar.item icon="inbox-stack" :href="route('courriers.mes-courriers')"
+                                :current="request()->routeIs('courriers.mes-courriers')" wire:navigate>
+                                {{ __('Mes courriers') }}
+                            </flux:sidebar.item>
+                        @endif
                         @if ($menu['courriers_tous'])
                             <flux:sidebar.item icon="list-bullet" :href="route('courriers.rechercher')"
                                 :current="request()->routeIs('courriers.rechercher') && request()->query('sens') === null"
@@ -294,8 +302,8 @@ $compteurNotificationsNonLues = $menu['notifications'] ? $u->unreadNotifications
                          privilèges lui-même est désormais fixe (plus de
                          création/suppression de définition), voir
                          le journal de développement. --}}
-                    <flux:sidebar.group :heading="__('Administration')" expandable
-                        :expanded="request()->routeIs(['admin.utilisateurs', 'admin.profils', 'admin.regles', 'admin.organisation', 'admin.parametres', 'admin.dossier-surveille', 'admin.delegation-dga'])"
+                    <flux:sidebar.group :heading="__('Configuration')" expandable
+                        :expanded="request()->routeIs(['admin.utilisateurs', 'admin.profils', 'admin.regles', 'admin.organisation', 'admin.parametres', 'admin.dossier-surveille', 'admin.securite-audit'])"
                         icon="cog-6-tooth" class="grid">
                         {{-- utilisateurs.gerer / privileges.gerer séparés le 2026-09-23. --}}
                         @if ($menu['admin_utilisateurs'])
@@ -355,18 +363,13 @@ $compteurNotificationsNonLues = $menu['notifications'] ? $u->unreadNotifications
                                 {{ __('Dossier surveillé') }}
                             </flux:sidebar.item>
                         @endif
-                        {{-- Délégation DGA/ADJ → RH en cas d'absence simultanée
-                             (2026-10-06, entretien terrain réceptionniste, voir
-                             DECISIONS.md "Délégation DGA/ADJ absents"). --}}
-                        @if ($menu['admin_delegation_dga'])
-                            <flux:sidebar.item icon="arrow-right-circle" :href="route('admin.delegation-dga')"
-                                :current="request()->routeIs('admin.delegation-dga')" wire:navigate>
-                                {{ __('Délégation DG') }}
-                            </flux:sidebar.item>
-                        @endif
+                        {{-- 2026-10-30 — page réelle (conformité de l'archivage,
+                             Module 9), plus « Bientôt ». --}}
                         @if ($menu['admin_audit'])
-                            <x-sidebar-item-a-venir
-                                icon="shield-check">{{ __('Sécurité & Audit') }}</x-sidebar-item-a-venir>
+                            <flux:sidebar.item icon="shield-check" :href="route('admin.securite-audit')"
+                                :current="request()->routeIs('admin.securite-audit')" wire:navigate>
+                                {{ __('Sécurité & Audit') }}
+                            </flux:sidebar.item>
                         @endif
                     </flux:sidebar.group>
                 @endif
@@ -377,12 +380,17 @@ $compteurNotificationsNonLues = $menu['notifications'] ? $u->unreadNotifications
                      avec ses propres filtres/export, n'existe pas encore
                      (explicitement hors périmètre phase 1, voir PRD.md
                      "Tableaux de bord avec filtres avancés/export
-                     personnalisé"). --}}
+                     personnalisé"). 2026-10-30 — « Dashboard statistiques »
+                     construit (indicateurs essentiels, filtres simples, sans
+                     export) ; « Rapports » reste à venir. --}}
                 @if ($groupe('stats_'))
                     <flux:sidebar.group :heading="__('Statistiques & Rapports')" icon="chart-bar" class="grid">
+                        {{-- 2026-10-30 — page réelle (Statistiques), plus « Bientôt ». --}}
                         @if ($menu['stats_dashboard'])
-                            <x-sidebar-item-a-venir
-                                icon="chart-bar">{{ __('Dashboard statistiques') }}</x-sidebar-item-a-venir>
+                            <flux:sidebar.item icon="chart-bar" :href="route('statistiques.index')"
+                                :current="request()->routeIs('statistiques.index')" wire:navigate>
+                                {{ __('Statistiques') }}
+                            </flux:sidebar.item>
                         @endif
                         @if ($menu['stats_rapports'])
                             <x-sidebar-item-a-venir
@@ -525,7 +533,7 @@ $compteurNotificationsNonLues = $menu['notifications'] ? $u->unreadNotifications
         <flux:spacer />
 
         <flux:dropdown position="top" align="end">
-            <flux:profile :initials="auth()->user()->initials()" icon-trailing="chevron-down" />
+            <flux:profile :initials="auth()->user()->initials()" :avatar="auth()->user()->photoUrl()" icon-trailing="chevron-down" />
 
             <flux:menu>
                 @include('partials.user-menu-items')
@@ -581,7 +589,7 @@ $compteurNotificationsNonLues = $menu['notifications'] ? $u->unreadNotifications
         <flux:dropdown position="bottom" align="end">
             <button type="button"
                 class="group flex items-center gap-2 rounded-lg p-1 hover:bg-zinc-800/5 dark:hover:bg-white/15">
-                <flux:avatar size="sm" circle :initials="auth()->user()->initials()" />
+                <flux:avatar size="sm" circle :initials="auth()->user()->initials()" :src="auth()->user()->photoUrl()" />
                 <div class="hidden text-start sm:block">
                     <div class="text-sm font-medium text-zinc-800 dark:text-white">{{ auth()->user()->name }}</div>
                     <div class="text-xs text-zinc-500 dark:text-zinc-400">

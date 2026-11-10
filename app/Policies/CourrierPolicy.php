@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\Courrier;
 use App\Models\User;
+use App\Services\ConservationService;
 use App\Services\WorkflowService;
 
 class CourrierPolicy
@@ -17,7 +18,7 @@ class CourrierPolicy
     // `$user->hasPrivilege('...')`, assignable dynamiquement à un profil
     // ET/OU à un utilisateur précis depuis /admin/privileges, sans changer
     // de code. Le PÉRIMÈTRE (scope) de chaque privilège "_service"/
-    // "_propre"/"_affecte"/"_dga" reste inchangé (même condition qu'avant),
+    // "_propre"/"_affecte" reste inchangé (même condition qu'avant),
     // seul le contrôle "qui a le droit" est désormais dynamique.
 
     // Module 1 — saisie réservée à l'agent courrier / secrétariat (voir
@@ -121,11 +122,25 @@ class CourrierPolicy
             return true;
         }
 
-        // service null-safe : un courrier entrant en attente de validation
-        // DGA/ADJ n'a pas encore de service (voir DECISIONS.md,
-        // synchronisation SRS-GEC.pdf) — un Responsable de service ne doit
-        // simplement pas le voir tant que ce n'est pas le cas, pas planter.
+        // service null-safe : un courrier entrant pas encore transféré n'a
+        // pas de service — un Responsable de service ne doit simplement pas
+        // le voir tant que ce n'est pas le cas, pas planter. Dès le
+        // transfert (2026-10-23), le service est posé : son responsable voit
+        // l'enveloppe du courrier pour l'accepter ou le refuser, mais pas son
+        // contenu avant l'acceptation (voir voirContenu() plus bas).
         if ($user->hasPrivilege('courriers.voir_service') && $user->id === $courrier->service?->responsable_id) {
+            return true;
+        }
+
+        // 2026-10-23 (voir DECISIONS.md "Transmission descendante par la
+        // Direction") — même privilège, étendu aux services des unités
+        // placées sous une entité qu'il dirige (ex. le chef d'une Direction
+        // suit les courriers transmis à ses départements). Consultation
+        // seule : affecter()/valider() comparent toujours au responsable du
+        // service lui-même.
+        if ($user->hasPrivilege('courriers.voir_service')
+            && $courrier->service_id !== null
+            && in_array($courrier->service_id, $user->idsServicesSupervises(), true)) {
             return true;
         }
 
@@ -137,41 +152,14 @@ class CourrierPolicy
             return true;
         }
 
-        // 2026-09-08 — rôle global (pas de service_id), scopé au seul
-        // statut où DGA a réellement quelque chose à faire, même logique
-        // que les autres profils (périmètre = ce qui les concerne
-        // actuellement, pas un historique). 'en_cours_de_transfert', pas
-        // 'en_attente_de_transfert' (2026-09-15, voir DECISIONS.md,
-        // synchronisation SRS-GEC.pdf) : le DGA n'a rien à faire tant que la
-        // réceptionniste n'a pas explicitement cliqué "Transférer".
-        // 2026-09-15 (mise à jour) — depuis que la réceptionniste choisit UN
-        // destinataire précis (voir DECISIONS.md "Destinataires de
-        // transfert"), un courrier adressé à quelqu'un d'autre ne doit plus
-        // apparaître ici : `destinataire_transfert_id === null` reste
-        // autorisé pour tout DGA-privilégié — comportement d'avant,
-        // préservé pour les courriers transférés avant ce changement.
-        if ($user->hasPrivilege('courriers.voir_dga')
-            && $courrier->statut === 'en_cours_de_transfert'
-            && ($courrier->destinataire_transfert_id === null || $courrier->destinataire_transfert_id === $user->id)) {
-            return true;
-        }
-
-        // 2026-10-06 (entretien terrain, voir DECISIONS.md "Délégation DGA/
-        // ADJ absents") : miroir de la branche ci-dessus pour un délégataire
-        // actif (ex. RH), sans le privilège courriers.voir_dga lui-même.
-        $delegantsIds = $user->delegationsDgaActivesIds();
-
-        if (! empty($delegantsIds)
-            && $courrier->statut === 'en_cours_de_transfert'
-            && ($courrier->destinataire_transfert_id === null || in_array($courrier->destinataire_transfert_id, $delegantsIds, true))) {
-            return true;
-        }
+        // 2026-10-23 — branches DGA (courriers.voir_dga) et délégation DGA
+        // retirées avec le routage DGA lui-même (voir DECISIONS.md
+        // "Transfert direct au service et acceptation").
 
         // 2026-09-24 (voir DECISIONS.md "DGA : consultation des courriers
-        // transférés") — demande explicite de l'utilisateur ("dga doesn't
-        // see all the courier he transfered") : une fois le service validé,
-        // la DGA garde la CONSULTATION du courrier (lecture seule — aucune
-        // autre ability ne s'appuie sur ce privilège).
+        // transférés") — une DGA garde la CONSULTATION des courriers dont
+        // elle a validé le service avant la fin du routage DGA (lecture
+        // seule — aucune autre ability ne s'appuie sur ce privilège).
         if ($user->hasPrivilege('courriers.voir_transferes') && $courrier->estTransferePar($user)) {
             return true;
         }
@@ -299,6 +287,38 @@ class CourrierPolicy
         return false;
     }
 
+    // 2026-10-23 (voir DECISIONS.md "Transmission descendante par la
+    // Direction") — le responsable d'une entité (ex. une Direction) transmet
+    // un courrier qu'il a accepté à l'une des unités placées directement
+    // sous elle, qui le reçoit "À affecter". Même portée que la première
+    // affectation (affecter() : responsable du service du courrier, ou
+    // affecter_tout), plus le privilège dédié ; jamais un pli confidentiel
+    // remis directement à une personne (pas de service).
+    // 2026-10-29 — comme la première affectation : seulement une fois la
+    // décharge remise et signée (Courrier::dechargeTerminee()).
+    public function transmettre(User $user, Courrier $courrier): bool
+    {
+        return $courrier->statut === 'enregistre'
+            && $courrier->service_id !== null
+            && ! $courrier->confidentiel_direct
+            && $courrier->dechargeTerminee()
+            && $user->hasPrivilege('courriers.transmettre')
+            && $this->affecter($user, $courrier);
+    }
+
+    // Première affectation (« Affecter » de la fiche) — 2026-10-29 (« it
+    // should appear only when a condition is met », ordre remise →
+    // signature → affectation) : la portée reste celle d'affecter(), mais
+    // seulement à l'étape « Accepté — à affecter » et une fois la décharge
+    // remise ET signée. affecter() lui-même reste inchangé : il sert aussi à
+    // la réaffectation, au délai et à « Transmettre ».
+    public function affecterPremiere(User $user, Courrier $courrier): bool
+    {
+        return $courrier->statut === 'enregistre'
+            && $courrier->dechargeTerminee()
+            && $this->affecter($user, $courrier);
+    }
+
     // 2026-10-13, demande explicite de l'utilisateur ("isnt the another way
     // to that without selecting his name") — raccourci "Traiter moi-même" :
     // auto-affectation + démarrage du traitement en une seule action, pour
@@ -320,21 +340,23 @@ class CourrierPolicy
     // pour que peutTraiterMoiMeme reflète fidèlement ce que l'action va
     // réellement faire (sinon le bouton reste visible après un premier
     // usage, et un second clic échoue avec une RuntimeException).
+    // 2026-10-29 — même ordre que la première affectation (affecterPremiere()).
     public function traiterMoiMeme(User $user, Courrier $courrier): bool
     {
-        return $courrier->statut === 'enregistre'
-            && $this->affecter($user, $courrier)
+        return $this->affecterPremiere($user, $courrier)
             && $user->hasPrivilege('courriers.traiter_affecte');
     }
 
     // Module 5 — fixer / modifier le délai de traitement (chronomètre,
     // 2026-09-24) : même portée que l'affectation (responsable du service,
     // ou affecter_tout), EN PLUS du privilège d'action dédié ; seulement
-    // tant que le courrier est encore en circuit.
+    // tant que le courrier est encore en circuit — et pas avant que son
+    // service l'ait accepté (2026-10-23).
     public function fixerDelai(User $user, Courrier $courrier): bool
     {
         return $user->hasPrivilege('courriers.fixer_delai')
             && in_array($courrier->statut, WorkflowService::statutsActifs(), true)
+            && ! in_array($courrier->statut, ['en_attente_de_transfert', 'en_cours_de_transfert'], true)
             && $this->affecter($user, $courrier);
     }
 
@@ -356,6 +378,14 @@ class CourrierPolicy
         }
 
         if ($courrier->statut === 'archive') {
+            return false;
+        }
+
+        // 2026-10-29 — filet de sécurité derrière l'ordre remise → signature
+        // → affectation : jamais de traitement (démarrer, soumettre, valider
+        // directement) tant que l'original n'est pas marqué comme remis,
+        // même pour un courrier affecté par un autre chemin.
+        if (! $courrier->originalRemis()) {
             return false;
         }
 
@@ -401,11 +431,11 @@ class CourrierPolicy
         return false;
     }
 
-    // Module 1/4 — la réceptionniste clique "Transférer" pour envoyer
-    // explicitement au DGA/ADJ DGA un courrier entrant en attente (2026-09-15,
-    // voir DECISIONS.md, synchronisation SRS-GEC.pdf). Même forme que
-    // update() : "_tout" pour un administrateur, "_propre" limité à qui a
-    // créé le courrier (la réceptionniste qui l'a enregistré).
+    // Module 1/4 — l'accueil transfère un courrier entrant en attente
+    // directement au service concerné (2026-10-23, voir DECISIONS.md
+    // "Transfert direct au service et acceptation" — plus de DGA). Même
+    // forme que update() : "_tout" pour un administrateur, "_propre" limité
+    // à qui a créé le courrier (la réceptionniste qui l'a enregistré).
     public function transferer(User $user, Courrier $courrier): bool
     {
         if (! $this->niveauSuffisant($user, $courrier)) {
@@ -506,14 +536,30 @@ class CourrierPolicy
     // vérification de PORTÉE déjà en place (valider() : valider_tout /
     // valider_service, niveau, dossier, périmètre) — jamais l'un sans l'autre.
 
+    // 2026-10-29 (« retire les boutons Réaffecter, Rejeter ce courrier et
+    // Soumettre pour validation quand c'est responsable et directeur »,
+    // précisé : seulement quand il traite lui-même) — le chef
+    // (responsable, chef de département, directeur) qui s'est affecté le
+    // courrier en est à la fois le traiteur et le validateur : il le valide
+    // directement, sans le soumettre à lui-même, le réaffecter ni le rejeter.
+    private function traiteLuiMeme(User $user, Courrier $courrier): bool
+    {
+        return $courrier->affectationCourante?->user_id === $user->id
+            && $this->valider($user, $courrier);
+    }
+
     public function reaffecter(User $user, Courrier $courrier): bool
     {
-        return $user->hasPrivilege('courriers.reaffecter') && $this->affecter($user, $courrier);
+        return $user->hasPrivilege('courriers.reaffecter')
+            && $this->affecter($user, $courrier)
+            && ! $this->traiteLuiMeme($user, $courrier);
     }
 
     public function soumettreValidation(User $user, Courrier $courrier): bool
     {
-        return $user->hasPrivilege('courriers.soumettre_validation') && $this->traiter($user, $courrier);
+        return $user->hasPrivilege('courriers.soumettre_validation')
+            && $this->traiter($user, $courrier)
+            && ! $this->traiteLuiMeme($user, $courrier);
     }
 
     // 2026-10-14, demande explicite de l'utilisateur ("if is the
@@ -527,11 +573,14 @@ class CourrierPolicy
     // depuis laquelle "Soumettre" part normalement) : si les deux sont
     // vraies pour ce $user précis, c'est qu'il est à la fois le
     // collaborateur affecté ET le responsable validateur. Le circuit à 2
-    // étapes reste inchangé pour tout le monde d'autre.
+    // étapes reste inchangé pour tout le monde d'autre. 2026-10-29 — ne passe
+    // plus par soumettreValidation(), désormais refusé à ce même chef (voir
+    // traiteLuiMeme()) : mêmes conditions, écrites directement.
     public function validerDirectement(User $user, Courrier $courrier): bool
     {
         return $courrier->statut === 'en_traitement'
-            && $this->soumettreValidation($user, $courrier)
+            && $user->hasPrivilege('courriers.soumettre_validation')
+            && $this->traiter($user, $courrier)
             && $this->valider($user, $courrier);
     }
 
@@ -540,9 +589,15 @@ class CourrierPolicy
         return $user->hasPrivilege('courriers.renvoyer_correction') && $this->valider($user, $courrier);
     }
 
+    // Un courrier en attente d'acceptation se REFUSE (retour à l'accueil),
+    // il ne se rejette pas : le rejeter le clôturerait alors que le service
+    // destinataire n'a même pas pu voir son contenu (2026-10-23).
     public function rejeter(User $user, Courrier $courrier): bool
     {
-        return $user->hasPrivilege('courriers.rejeter') && $this->valider($user, $courrier);
+        return $user->hasPrivilege('courriers.rejeter')
+            && $courrier->statut !== 'en_cours_de_transfert'
+            && $this->valider($user, $courrier)
+            && ! $this->traiteLuiMeme($user, $courrier);
     }
 
     // Ouvert au collaborateur affecté ET au responsable (voir
@@ -557,6 +612,21 @@ class CourrierPolicy
     {
         return $user->hasPrivilege('courriers.reprendre')
             && ($this->traiter($user, $courrier) || $this->valider($user, $courrier));
+    }
+
+    // 2026-10-30 (Module 7, « on doit pouvoir les relancer manuellement ») —
+    // relancer la personne affectée : privilège dédié (Responsable de service,
+    // DG par défaut) cumulé avec la consultation du courrier, sur un courrier
+    // affecté à QUELQU'UN D'AUTRE (jamais se relancer soi-même).
+    public function relancer(User $user, Courrier $courrier): bool
+    {
+        $affecteId = $courrier->affectationCourante?->user_id;
+
+        return $user->hasPrivilege('courriers.relancer')
+            && in_array($courrier->statut, WorkflowService::STATUTS_RELANCE, true)
+            && $affecteId !== null
+            && $affecteId !== $user->id
+            && $this->view($user, $courrier);
     }
 
     public function validerClassement(User $user, Courrier $courrier): bool
@@ -576,12 +646,12 @@ class CourrierPolicy
 
     public function voirTexteOcr(User $user, Courrier $courrier): bool
     {
-        return $user->hasPrivilege('courriers.voir_texte_ocr') && $this->view($user, $courrier);
+        return $user->hasPrivilege('courriers.voir_texte_ocr') && $this->voirContenu($user, $courrier);
     }
 
     public function voirPiecesJointes(User $user, Courrier $courrier): bool
     {
-        return $user->hasPrivilege('courriers.voir_pieces_jointes') && $this->view($user, $courrier);
+        return $user->hasPrivilege('courriers.voir_pieces_jointes') && $this->voirContenu($user, $courrier);
     }
 
     // 2026-10-12, demande explicite de l'utilisateur ("not everybody has to
@@ -596,7 +666,7 @@ class CourrierPolicy
     // bouton précis, celui-ci gouverne la simple VISIBILITÉ de la section.
     public function voirTraitementDocument(User $user, Courrier $courrier): bool
     {
-        return $user->hasPrivilege('courriers.voir_traitement_document') && $this->view($user, $courrier);
+        return $user->hasPrivilege('courriers.voir_traitement_document') && $this->voirContenu($user, $courrier);
     }
 
     // "Répondre"/"Créer une note" (Actions rapides, ShowCourrier) — boutons
@@ -627,62 +697,143 @@ class CourrierPolicy
         return $user->hasPrivilege('courriers.voir_mes_courriers');
     }
 
-    // Module 1/4 — demande explicite de l'utilisateur (2026-09-08) : la DGA/
-    // ADJ confirme/change le service proposé par Module 3 pour un courrier
-    // entrant non-sinistre, avant que le circuit habituel ne démarre.
-    // $courrier non utilisé dans le corps, mais gardé dans la signature pour
-    // rester appelable via ShowCourrier::courrierPour() comme
-    // affecter/traiter/valider ci-dessus (même mécanisme d'appel,
-    // `$this->authorize($abilite, $courrier)`). Voir DECISIONS.md "Circuit
-    // courrier entrant : validation DGA/ADJ".
-    public function validerService(User $user, Courrier $courrier): bool
+    // 2026-10-30 — page « Dashboard statistiques » (Module 10 étendu) ; les
+    // chiffres restent bornés au périmètre de services (voir Statistiques::perimetre()).
+    public function voirStatistiques(User $user): bool
     {
-        if (! $this->niveauSuffisant($user, $courrier)) {
-            return false;
-        }
+        return $user->hasPrivilege('statistiques.consulter');
+    }
 
-        if (! $this->accesDossierSuffisant($user, $courrier)) {
-            return false;
-        }
+    // ===== Conformité de l'archivage (2026-10-30, Module 9, voir DECISIONS.md) =====
 
-        if (! $this->accesPerimetreSuffisant($user, $courrier)) {
-            return false;
-        }
+    // Page Administration › Sécurité & Audit.
+    public function voirSecuriteAudit(User $user): bool
+    {
+        return $user->hasPrivilege('administration.audit');
+    }
 
-        if ($courrier->statut === 'archive') {
-            return false;
-        }
+    // Journal des consultations (qui a ouvert ou téléchargé quoi) : sur la
+    // fiche, limité aux courriers qu'on peut consulter.
+    public function voirConsultations(User $user, ?Courrier $courrier = null): bool
+    {
+        return $user->hasPrivilege('courriers.voir_consultations')
+            && ($courrier === null || $this->view($user, $courrier));
+    }
 
-        // 2026-09-24 — seule étape où valider le service a un sens. Jusqu'ici
-        // la vue et WorkflowService le garantissaient seuls ; nécessaire ici
-        // depuis que la DGA garde la consultation des courriers déjà
-        // transférés (sinon peutValiderService restait vrai après coup).
+    // Durées de conservation, prolongation, gel juridique.
+    public function gererConservation(User $user): bool
+    {
+        return $user->hasPrivilege('archives.gerer_conservation');
+    }
+
+    // Destruction d'une archive arrivée à échéance, jamais sous gel juridique
+    // (ConservationService::peutEtreDetruit(), revérifié au moment d'agir).
+    public function detruire(User $user, Courrier $courrier): bool
+    {
+        return $this->gererConservation($user)
+            && app(ConservationService::class)->peutEtreDetruit($courrier);
+    }
+
+    // Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au service
+    // et acceptation") — le responsable du service DESTINATAIRE accepte ou
+    // refuse un courrier que l'accueil lui a transféré (remplace l'ancienne
+    // validation du service par la DGA). Uniquement tant que le transfert
+    // est en attente ; mêmes portes cumulatives que view() (niveau, dossier,
+    // périmètre). Voir le courrier (ex. voir_tout) ne suffit jamais : seul
+    // le responsable du service concerné décide.
+    public function accepterTransfert(User $user, Courrier $courrier): bool
+    {
         if ($courrier->statut !== 'en_cours_de_transfert') {
             return false;
         }
 
-        if ($user->hasPrivilege('courriers.dga_valider_service')) {
-            // 2026-09-15 (mise à jour, voir DECISIONS.md "Destinataires de
-            // transfert") : ne valide que ce qui lui a été explicitement
-            // adressé — même exception `null` que view() ci-dessus pour les
-            // courriers transférés avant ce changement.
-            return $courrier->destinataire_transfert_id === null || $courrier->destinataire_transfert_id === $user->id;
-        }
-
-        // 2026-10-06 (entretien terrain, voir DECISIONS.md "Délégation DGA/
-        // ADJ absents") : un utilisateur sans le privilège DGA peut quand
-        // même valider si un DGA/ADJ actif lui a explicitement délégué cette
-        // capacité (absence simultanée du DGA ET de l'Adjoint DGA) — jamais
-        // au-delà de ce que ce DGA précis couvre : même règle d'adressage
-        // que ci-dessus, en remplaçant "soi-même" par "n'importe quel DGA
-        // délégant actuellement couvert".
-        $delegantsIds = $user->delegationsDgaActivesIds();
-
-        if (empty($delegantsIds)) {
+        if (! $this->niveauSuffisant($user, $courrier) || ! $this->accesDossierSuffisant($user, $courrier) || ! $this->accesPerimetreSuffisant($user, $courrier)) {
             return false;
         }
 
-        return $courrier->destinataire_transfert_id === null || in_array($courrier->destinataire_transfert_id, $delegantsIds, true);
+        return $user->hasPrivilege('courriers.accepter_transfert')
+            && $courrier->service?->responsable_id === $user->id;
+    }
+
+    // Accepter et refuser sont les deux issues d'une même décision : même
+    // privilège, même portée.
+    public function refuserTransfert(User $user, Courrier $courrier): bool
+    {
+        return $this->accepterTransfert($user, $courrier);
+    }
+
+    // L'accueil marque l'original papier comme remis, une fois le transfert
+    // accepté (jamais avant : c'est précisément la preuve exigée avant de
+    // remettre le papier). Réservé à qui a transféré ou enregistré le
+    // courrier, ou à transferer_tout.
+    public function marquerOriginalRemis(User $user, Courrier $courrier): bool
+    {
+        if (! $user->hasPrivilege('courriers.marquer_original_remis') || ! $this->niveauSuffisant($user, $courrier)) {
+            return false;
+        }
+
+        $transfert = $courrier->dernierTransfert;
+
+        if ($transfert === null || ! $transfert->estAccepte() || $transfert->original_remis_le !== null) {
+            return false;
+        }
+
+        return $user->hasPrivilege('courriers.transferer_tout')
+            || $transfert->transfere_par_id === $user->id
+            || $courrier->estCreeParUtilisateur($user);
+    }
+
+    // 2026-10-28 — signature électronique de la réception de l'original :
+    // la personne qui a accepté le transfert, ou le responsable du service
+    // destinataire (même privilège que l'acceptation), une seule fois.
+    // 2026-10-29 (ordre remise → signature → affectation) : seulement après
+    // que l'accueil a marqué l'original comme remis.
+    public function signerReceptionOriginal(User $user, Courrier $courrier): bool
+    {
+        if (! $user->hasPrivilege('courriers.accepter_transfert') || ! $this->niveauSuffisant($user, $courrier)) {
+            return false;
+        }
+
+        $transfert = $courrier->dernierTransfert;
+
+        if ($transfert === null || ! $transfert->estAccepte() || $transfert->original_remis_le === null || $transfert->reception_signee_le !== null) {
+            return false;
+        }
+
+        // 2026-11-09 (« only the person receiving the doc should sign, the
+        // agent shouldn't sign ») — seule la personne qui REÇOIT signe :
+        // jamais celle qui a transféré ou remis l'original, même si elle a
+        // aussi des droits côté service (séparation des rôles).
+        if (in_array($user->id, [$transfert->transfere_par_id, $transfert->original_remis_par_id], true)) {
+            return false;
+        }
+
+        return $transfert->decide_par_id === $user->id
+            || $transfert->service?->responsable_id === $user->id;
+    }
+
+    // Module 1/4/9 (2026-10-23) — contenu masqué tant que le service
+    // destinataire n'a pas accepté : un responsable ne doit pas lire le
+    // courrier d'un autre service, mal orienté, avant de l'avoir refusé. Le
+    // créateur, l'agent qui a transféré et voir_tout gardent l'accès.
+    private function contenuAccessible(User $user, Courrier $courrier): bool
+    {
+        if ($courrier->statut !== 'en_cours_de_transfert') {
+            return true;
+        }
+
+        return $user->hasPrivilege('courriers.voir_tout')
+            || $courrier->estCreeParUtilisateur($user)
+            || $courrier->dernierTransfert?->transfere_par_id === $user->id;
+    }
+
+    // Aperçu du document principal (CourrierDocumentApercuController) — et
+    // socle des autres lectures de contenu ci-dessous (téléchargement, texte
+    // OCR, pièces jointes, bloc de traitement). Bloqué CÔTÉ SERVEUR, jamais
+    // seulement flouté à l'écran.
+    public function voirContenu(User $user, Courrier $courrier): bool
+    {
+        return $this->view($user, $courrier) && $this->contenuAccessible($user, $courrier);
     }
 
     // Module 8 — recherche/liste multi-critères : ouverte à tout profil
@@ -690,14 +841,11 @@ class CourrierPolicy
     // il doit pouvoir retrouver les courriers qu'il a lui-même enregistrés).
     // Le filtrage par périmètre lui-même est fait au niveau de la requête
     // dans CourrierList::resultats(), avec la même logique que view().
-    // Télécharger (document principal, pièces jointes) et imprimer le
-    // bordereau : séparés de la consultation le 2026-09-23 — il faut
-    // pouvoir VOIR le courrier ET avoir le privilège de l'action.
-    public function telecharger(User $user, Courrier $courrier): bool
-    {
-        return $user->hasPrivilege('courriers.telecharger') && $this->view($user, $courrier);
-    }
-
+    // Imprimer le bordereau : séparé de la consultation le 2026-09-23 — il
+    // faut pouvoir VOIR le courrier ET avoir le privilège de l'action.
+    // « Télécharger » retiré le 2026-11-09 : plus personne ne télécharge un
+    // document, il se consulte en aperçu sécurisé (voir DECISIONS.md
+    // « Fichiers : chiffrement, aperçu sécurisé, aucun téléchargement »).
     public function imprimerBordereau(User $user, Courrier $courrier): bool
     {
         return $user->hasPrivilege('courriers.imprimer_bordereau') && $this->view($user, $courrier);

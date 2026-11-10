@@ -143,7 +143,8 @@ class ShowCourrierTest extends TestCase
             ->assertOk()
             ->assertSeeHtml('<pre')
             ->assertSee('Bagage/Luggage')
-            ->assertSee('Télécharger');
+            // 2026-11-09 — plus aucun téléchargement (aperçu sécurisé).
+            ->assertDontSee('Télécharger');
     }
 
     public function test_un_document_pdf_est_affiche_dans_le_panneau_apercu_en_canevas(): void
@@ -161,7 +162,7 @@ class ShowCourrierTest extends TestCase
 
         $this->assertStringNotContainsString('/vendor/pdfjs/web/viewer.html', $html);
         $this->assertStringContainsString(
-            str_replace('/', '\/', route('courriers.document.apercu', $courrier->id)),
+            str_replace('/', '\/', route('apercus.manifeste', ['courrier', $courrier->id])),
             $html
         );
     }
@@ -180,7 +181,7 @@ class ShowCourrierTest extends TestCase
 
         $this->assertStringNotContainsString('/vendor/pdfjs/web/viewer.html', $html);
         $this->assertStringContainsString(
-            str_replace('/', '\/', route('courriers.document.apercu', $courrier->id)),
+            str_replace('/', '\/', route('apercus.manifeste', ['courrier', $courrier->id])),
             $html
         );
     }
@@ -288,10 +289,11 @@ class ShowCourrierTest extends TestCase
         $composant->assertSee('En attente de transfert');
     }
 
-    // Demande de l'utilisateur (2026-09-24) : après la validation DGA, le
-    // statut 'enregistre' s'affichait "Enregistre", comme un retour en
-    // arrière — il s'affiche désormais comme le 3e sous-statut du SRS.
-    public function test_le_statut_enregistre_saffiche_transfere_a_affecter(): void
+    // Demande de l'utilisateur (2026-09-24) : le statut 'enregistre' ne doit
+    // pas s'afficher "Enregistre", comme un retour en arrière. Depuis le
+    // 2026-10-23 (voir DECISIONS.md "Transfert direct au service et
+    // acceptation"), il signifie "accepté par le service, à affecter".
+    public function test_le_statut_enregistre_saffiche_accepte_a_affecter(): void
     {
         $agent = $this->utilisateurAvecProfil('Agent');
         $courrier = $this->courrierEnregistrePar($agent, ['statut' => 'enregistre']);
@@ -299,9 +301,10 @@ class ShowCourrierTest extends TestCase
         $this->actingAs($agent);
 
         Livewire::test(ShowCourrier::class, ['courrierId' => $courrier->id])
-            ->assertSee('Transféré — à affecter');
+            ->assertSee('Accepté — à affecter');
 
-        $this->assertSame('Transféré — à affecter', Courrier::libelleStatut('enregistre'));
+        $this->assertSame('Accepté — à affecter', Courrier::libelleStatut('enregistre'));
+        $this->assertSame('En attente d\'acceptation', Courrier::libelleStatut('en_cours_de_transfert'));
         $this->assertSame('statut inconnu', Courrier::libelleStatut('statut_inconnu'));
     }
 
@@ -328,16 +331,15 @@ class ShowCourrierTest extends TestCase
     public function test_les_nouveaux_champs_de_la_maquette_detail_sont_affiches(): void
     {
         // Maquette "Détail du courrier" (2026-09-18, "use this design
-        // exactly") — dossier_reference/echeance/sla_jours/
-        // service_responsable_id sont de vrais nouveaux champs (voir
-        // migration 2026_09_18_100000), pas seulement de la vue.
+        // exactly") — dossier_reference/echeance/sla_jours sont de vrais
+        // nouveaux champs (voir migration 2026_09_18_100000), pas seulement
+        // de la vue. 2026-10-30 — « Service responsable » retiré de la fiche
+        // (jamais renseigné par le circuit, doublait « Service destinataire »).
         $agent = $this->utilisateurAvecProfil('Agent');
-        $serviceResponsable = Service::factory()->create(['code' => 'DAF']);
         $courrier = $this->courrierEnregistrePar($agent, [
             'dossier_reference' => 'DOS-2026-0042',
             'echeance' => '2026-09-25',
             'sla_jours' => 2,
-            'service_responsable_id' => $serviceResponsable->id,
             'note_interne' => 'À traiter en priorité.',
         ]);
 
@@ -348,7 +350,7 @@ class ShowCourrierTest extends TestCase
             ->assertSee('DOS-2026-0042')
             ->assertSee('25/09/2026')
             ->assertSee('2 jours')
-            ->assertSee($serviceResponsable->nom)
+            ->assertDontSee(__('Service responsable'))
             ->assertSee('À traiter en priorité.');
     }
 

@@ -91,6 +91,10 @@
                         @if ($notification->data['sous_libelle'] ?? null)
                             <span class="truncate text-xs text-zinc-400">{{ $notification->data['sous_libelle'] }}</span>
                         @endif
+                        {{-- 2026-10-30 — message de l'auteur (relance, motif…). --}}
+                        @if ($notification->data['commentaire'] ?? null)
+                            <span class="truncate text-xs italic text-brand-text-primary">« {{ $notification->data['commentaire'] }} »</span>
+                        @endif
                         <span class="text-xs text-zinc-400">{{ $notification->created_at->diffForHumans() }}</span>
                     </div>
                 </div>

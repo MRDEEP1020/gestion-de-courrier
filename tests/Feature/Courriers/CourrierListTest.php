@@ -7,6 +7,7 @@ use App\Models\Affectation;
 use App\Models\Courrier;
 use App\Models\CourrierHistorique;
 use App\Models\DossierClassement;
+use App\Models\OrganizationUnit;
 use App\Models\Privilege;
 use App\Models\Profil;
 use App\Models\Service;
@@ -499,26 +500,42 @@ class CourrierListTest extends TestCase
             ->assertDontSee('Classer la sélection');
     }
 
+    // 2026-10-23 (voir DECISIONS.md "Transfert direct au service et
+    // acceptation") — transfert groupé vers UN service choisi dans la cascade
+    // (plus vers une personne). Département racine ponté au service cible.
+    private function departementPontePourTransfert(): array
+    {
+        $responsable = $this->utilisateur('Responsable de service');
+        $cible = Service::factory()->create(['code' => 'DST', 'responsable_id' => $responsable->id]);
+        $departement = OrganizationUnit::factory()->create([
+            'type' => OrganizationUnit::TYPE_DEPARTMENT,
+            'parent_id' => null,
+            'service_id' => $cible->id,
+        ]);
+
+        return [$cible, $departement];
+    }
+
     public function test_le_transfert_en_masse_transfere_plusieurs_courriers_selectionnes(): void
     {
         $service = Service::factory()->create(['code' => 'TST']);
-        $premier = $this->courrier($service, ['statut' => 'en_attente_de_transfert']);
-        $second = $this->courrier($service, ['statut' => 'en_attente_de_transfert']);
+        $premier = $this->courrier($service, ['statut' => 'en_attente_de_transfert', 'service_id' => null]);
+        $second = $this->courrier($service, ['statut' => 'en_attente_de_transfert', 'service_id' => null]);
+        [$cible, $departement] = $this->departementPontePourTransfert();
 
-        $utilisateur = $this->utilisateur('Administrateur');
-        $dga = $this->utilisateur('DGA');
-        $utilisateur->destinatairesTransfert()->attach($dga->id);
-
-        $this->actingAs($utilisateur);
+        $this->actingAs($this->utilisateur('Administrateur'));
 
         Livewire::test(CourrierList::class)
             ->set('selectionnes', [$premier->id, $second->id])
-            ->set('destinataireChoisi', $dga->id)
-            ->call('transfererSelection');
+            ->set('departementSelectionneId', $departement->id)
+            ->call('transfererSelection')
+            ->assertHasNoErrors();
 
-        $this->assertSame('en_cours_de_transfert', $premier->refresh()->statut);
-        $this->assertSame('en_cours_de_transfert', $second->refresh()->statut);
-        $this->assertSame($dga->id, $premier->destinataire_transfert_id);
+        foreach ([$premier, $second] as $courrier) {
+            $courrier->refresh();
+            $this->assertSame('en_cours_de_transfert', $courrier->statut);
+            $this->assertSame($cible->id, $courrier->service_id);
+        }
         $this->assertSame(2, CourrierHistorique::whereIn('courrier_id', [$premier->id, $second->id])->where('action', 'transfert')->count());
     }
 
@@ -531,44 +548,55 @@ class CourrierListTest extends TestCase
         $service = Service::factory()->create(['code' => 'TST']);
         $agent = $this->utilisateur('Agent');
         $autreAgent = $this->utilisateur('Agent');
-        $dga = $this->utilisateur('DGA');
-        $agent->destinatairesTransfert()->attach($dga->id);
+        [, $departement] = $this->departementPontePourTransfert();
 
-        $lemien = $this->courrier($service, ['statut' => 'en_attente_de_transfert']);
+        $lemien = $this->courrier($service, ['statut' => 'en_attente_de_transfert', 'service_id' => null]);
         CourrierHistorique::create(['courrier_id' => $lemien->id, 'auteur_id' => $agent->id, 'action' => 'creation']);
 
-        $pasLeMien = $this->courrier($service, ['statut' => 'en_attente_de_transfert']);
+        $pasLeMien = $this->courrier($service, ['statut' => 'en_attente_de_transfert', 'service_id' => null]);
         CourrierHistorique::create(['courrier_id' => $pasLeMien->id, 'auteur_id' => $autreAgent->id, 'action' => 'creation']);
 
         $this->actingAs($agent);
 
         Livewire::test(CourrierList::class)
             ->set('selectionnes', [$lemien->id, $pasLeMien->id])
-            ->set('destinataireChoisi', $dga->id)
+            ->set('departementSelectionneId', $departement->id)
             ->call('transfererSelection');
 
         $this->assertSame('en_cours_de_transfert', $lemien->refresh()->statut);
         $this->assertSame('en_attente_de_transfert', $pasLeMien->refresh()->statut, 'le courrier d\'un autre agent ne doit pas être transféré par transferer_propre');
     }
 
-    public function test_le_transfert_en_masse_refuse_un_destinataire_non_autorise(): void
+    public function test_le_transfert_en_masse_exige_un_service_choisi(): void
     {
         $service = Service::factory()->create(['code' => 'TST']);
-        $courrier = $this->courrier($service, ['statut' => 'en_attente_de_transfert']);
+        $courrier = $this->courrier($service, ['statut' => 'en_attente_de_transfert', 'service_id' => null]);
 
-        $utilisateur = $this->utilisateur('Administrateur');
-        $dga = $this->utilisateur('DGA');
-        // Pas de attach() ici : $dga n'est PAS dans la liste autorisée.
-
-        $this->actingAs($utilisateur);
+        $this->actingAs($this->utilisateur('Administrateur'));
 
         Livewire::test(CourrierList::class)
             ->set('selectionnes', [$courrier->id])
-            ->set('destinataireChoisi', $dga->id)
             ->call('transfererSelection')
-            ->assertHasErrors('destinataireChoisi');
+            ->assertHasErrors('uniteSelectionneeId');
 
         $this->assertSame('en_attente_de_transfert', $courrier->refresh()->statut);
+    }
+
+    // Un courrier en attente d'acceptation ne doit pas être trouvable par son
+    // CONTENU par le service destinataire (même règle que son aperçu).
+    public function test_la_recherche_dans_le_contenu_ignore_un_courrier_pas_encore_accepte(): void
+    {
+        $responsable = $this->utilisateur('Responsable de service');
+        $service = Service::factory()->create(['code' => 'TST', 'responsable_id' => $responsable->id]);
+        $enAttente = $this->courrier($service, ['statut' => 'en_cours_de_transfert', 'texte_ocr' => 'Montant du préjudice', 'ocr_statut' => 'reussi']);
+        $accepte = $this->courrier($service, ['statut' => 'enregistre', 'texte_ocr' => 'Montant du préjudice', 'ocr_statut' => 'reussi']);
+
+        $this->actingAs($responsable);
+
+        Livewire::test(CourrierList::class)
+            ->set('contenu', 'préjudice')
+            ->assertSee($accepte->numero_reference)
+            ->assertDontSee($enAttente->numero_reference);
     }
 
     // Module 3/9 — classement en masse (2026-09-22, "les trois" points

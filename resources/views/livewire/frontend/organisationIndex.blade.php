@@ -127,7 +127,7 @@
 
                         {{-- Onglets du nœud sélectionné (spec §10) --}}
                         <div class="mt-4 flex gap-4 border-b border-brand-border text-sm dark:border-zinc-700">
-                            @foreach (['utilisateurs' => __('Utilisateurs'), 'responsable' => __('Responsable'), 'informations' => __('Informations'), 'parametres' => __('Paramètres')] as $cle => $libelle)
+                            @foreach (['utilisateurs' => __('Utilisateurs'), 'responsable' => $unite->titreDuChef(), 'informations' => __('Informations'), 'parametres' => __('Paramètres')] as $cle => $libelle)
                                 <button type="button" wire:click="$set('ongletDetail', '{{ $cle }}')" class="border-b-2 pb-2 {{ $ongletDetail === $cle ? 'border-brand-accent font-medium text-brand-accent' : 'border-transparent text-zinc-500 hover:text-zinc-700' }}">
                                     {{ $libelle }}
                                 </button>
@@ -150,21 +150,29 @@
                                     @error('utilisateurAAjouterId') <flux:text class="mb-2 text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
                                 @endcan
 
-                                <div class="overflow-x-auto rounded-xl border border-brand-border dark:border-zinc-700">
+                                {{-- Format de tableau commun (2026-10-29, « same format on all
+                                     the tables of the project ») — celui de « Tous les
+                                     courriers » (voir le commentaire de courrierList.blade.php) :
+                                     en-têtes en petites capitales soulignés navy, lignes sur UNE seule ligne (nom et fonction coupés, lisibles
+                                     en entier au survol), 16 px en haut et en bas de chaque
+                                     cellule, bouton d'actions centré. --}}
+                                <div class="@container overflow-x-auto rounded-xl border border-brand-border dark:border-zinc-700">
                                     <table class="w-full text-sm">
-                                        <thead class="bg-brand-table-header text-left text-sm font-medium text-zinc-600 dark:bg-zinc-800">
+                                        <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
                                             <tr>
-                                                <th class="py-2 pl-3 pr-2">{{ __('Nom') }}</th>
-                                                <th class="py-2 pr-2">{{ __('Fonction') }}</th>
-                                                <th class="py-2 pr-2">{{ __('Statut') }}</th>
-                                                <th class="py-2 pr-3 text-right">{{ __('Actions') }}</th>
+                                                <th class="py-3 pr-3 @min-[60rem]:pr-5 pl-4">{{ __('Nom') }}</th>
+                                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Fonction') }}</th>
+                                                <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Statut') }}</th>
+                                                <th class="relative w-px py-3 pr-4"><span class="sr-only">{{ __('Actions') }}</span></th>
                                             </tr>
                                         </thead>
-                                        <tbody class="divide-y divide-brand-border dark:divide-zinc-700">
+                                        <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
                                             @forelse ($this->utilisateursDuNoeud as $u)
-                                                <tr wire:key="membre-{{ $u->id }}">
-                                                    <td class="py-2 pl-3 pr-2 font-medium">{{ $u->name }}</td>
-                                                    <td class="py-2 pr-2 text-zinc-500">
+                                                <tr wire:key="membre-{{ $u->id }}" class="hover:bg-zinc-50 dark:hover:bg-zinc-800">
+                                                    <td class="w-[50%] min-w-28 py-4 pr-3 @min-[60rem]:pr-5 pl-4 font-medium">
+                                                        <div class="w-0 min-w-full truncate" title="{{ $u->name }}">{{ $u->name }}</div>
+                                                    </td>
+                                                    <td class="w-[50%] min-w-28 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">
                                                         @if ($membreFonctionEditionId === $u->id)
                                                             <form wire:submit="enregistrerFonction" class="flex items-center gap-1">
                                                                 <flux:input wire:model="fonctionEdition" size="sm" placeholder="{{ __('ex. Collaborateur') }}" class="max-w-xs" autofocus />
@@ -173,22 +181,22 @@
                                                             </form>
                                                             @error('fonctionEdition') <flux:text class="mt-1 text-xs text-brand-danger">{{ $message }}</flux:text> @enderror
                                                         @else
-                                                            {{ $u->pivot->role_in_unit ?? '—' }}
+                                                            <div class="w-0 min-w-full truncate" title="{{ $u->pivot->role_in_unit ?? '—' }}">{{ $u->pivot->role_in_unit ?? '—' }}</div>
                                                         @endif
                                                     </td>
-                                                    <td class="py-2 pr-2">
+                                                    <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5">
                                                         <span class="inline-flex items-center gap-1.5 text-xs font-medium {{ $u->actif ? 'text-brand-success' : 'text-zinc-500' }}">
                                                             <span class="size-2 rounded-full {{ $u->actif ? 'bg-brand-success' : 'bg-zinc-400' }}"></span>
                                                             {{ $u->actif ? __('Actif') : __('Désactivé') }}
                                                         </span>
                                                     </td>
-                                                    <td class="py-2 pr-3 text-right">
+                                                    <td class="py-4 pr-4 text-center">
                                                         <flux:dropdown position="bottom" align="end">
-                                                            <flux:button size="sm" variant="ghost" icon="ellipsis-horizontal" square :aria-label="__('Actions')" />
+                                                            <flux:button size="xs" variant="ghost" icon="ellipsis-horizontal" square :aria-label="__('Actions')" />
                                                             <flux:menu>
                                                                 <flux:menu.item icon="user" :href="route('admin.utilisateurs', ['modifier' => $u->id])" wire:navigate>{{ __('Gérer cet utilisateur') }}</flux:menu.item>
                                                                 @can('update', $unite)
-                                                                    <flux:menu.item icon="star" wire:click="definirCommeResponsable({{ $u->id }})">{{ __('Définir comme responsable') }}</flux:menu.item>
+                                                                    <flux:menu.item icon="star" wire:click="definirCommeResponsable({{ $u->id }})">{{ __('Définir comme :titre', ['titre' => mb_strtolower($unite->titreDuChef())]) }}</flux:menu.item>
                                                                 @endcan
                                                                 @can('manageUsers', $unite)
                                                                     <flux:menu.item icon="pencil-square" wire:click="modifierFonction({{ $u->id }})">{{ __('Modifier la fonction') }}</flux:menu.item>
@@ -272,7 +280,7 @@
                             <div class="flex items-start gap-2">
                                 <flux:icon.user class="mt-0.5 size-4 shrink-0 text-zinc-400" />
                                 <div class="min-w-0">
-                                    <dt class="text-xs text-zinc-500">{{ __('Responsable') }}</dt>
+                                    <dt class="text-xs text-zinc-500">{{ $unite->titreDuChef() }}</dt>
                                     <dd class="truncate">{{ $unite->responsable?->name ?? '—' }}</dd>
                                 </div>
                             </div>
@@ -292,7 +300,7 @@
                             </div>
                             <div>
                                 <div class="text-lg font-bold">{{ $unite->responsable ? 1 : 0 }}</div>
-                                <flux:text class="text-xs text-zinc-500">{{ __('Responsable') }}</flux:text>
+                                <flux:text class="text-xs text-zinc-500">{{ $unite->titreDuChef() }}</flux:text>
                             </div>
                             <div>
                                 <div class="text-lg font-bold">{{ $unite->enfants->where('type', App\Models\OrganizationUnit::TYPE_SUB_SERVICE)->count() }}</div>
@@ -331,6 +339,15 @@
                                             <flux:icon.chevron-right class="size-4 text-zinc-400" />
                                         </button>
                                     @endif
+                                    {{-- 2026-10-26 (notes de l'utilisateur) — un Service peut
+                                         dépendre directement d'une Direction ou du Site, sans
+                                         Département (ex. « Service Juridique et Contentieux »). --}}
+                                    @if (in_array($unite->type, [App\Models\OrganizationUnit::TYPE_SITE, App\Models\OrganizationUnit::TYPE_DIRECTION], true))
+                                        <button type="button" wire:click="ouvrirCreation({{ $unite->id }}, '{{ App\Models\OrganizationUnit::TYPE_SERVICE }}')" class="flex w-full items-center justify-between rounded-lg px-2 py-2 text-left text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800/60">
+                                            <span class="flex items-center gap-2"><flux:icon.plus class="size-4 text-zinc-400" />{{ __('Ajouter un service directement') }}</span>
+                                            <flux:icon.chevron-right class="size-4 text-zinc-400" />
+                                        </button>
+                                    @endif
                                 @endcan
                             @endif
                             @can('update', $unite)
@@ -362,7 +379,7 @@
             <flux:heading level="2">{{ $noeudEnEditionId ? __('Modifier le site / l\'agence') : __('Ajouter un site / une agence') }}</flux:heading>
             <flux:text class="text-xs text-zinc-500">{{ __('Un site/agence physique — le niveau le plus haut, sans parent.') }}</flux:text>
 
-            <x-organisation.champs-formulaire :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
+            <x-organisation.champs-formulaire :titre-chef="App\Models\OrganizationUnit::titreChef(App\Models\OrganizationUnit::TYPE_SITE)" :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
 
             <div class="flex justify-end gap-2 border-t border-brand-border pt-4 dark:border-zinc-700">
                 <flux:modal.close><flux:button variant="ghost">{{ __('Annuler') }}</flux:button></flux:modal.close>
@@ -374,9 +391,12 @@
     <flux:modal name="organisation-form-direction" class="w-full max-w-xl">
         <form wire:submit="enregistrerNoeud" class="space-y-6">
             <flux:heading level="2">{{ $noeudEnEditionId ? __('Modifier la direction') : __('Ajouter une direction') }}</flux:heading>
-            <flux:text class="text-xs text-zinc-500">{{ __('Une Direction — regroupe plusieurs Départements, ne reçoit jamais de courrier elle-même.') }}</flux:text>
+            {{-- 2026-10-23 — une Direction reçoit désormais du courrier (son
+                 responsable l'accepte puis le transmet à ses départements) :
+                 elle a son service réel, comme un Département. --}}
+            <flux:text class="text-xs text-zinc-500">{{ __('Une Direction — regroupe plusieurs Départements ; son responsable peut recevoir un courrier et le transmettre à l\'un d\'eux.') }}</flux:text>
 
-            <x-organisation.champs-formulaire :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
+            <x-organisation.champs-formulaire avec-service-pont :titre-chef="App\Models\OrganizationUnit::titreChef(App\Models\OrganizationUnit::TYPE_DIRECTION)" :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
 
             <div class="flex justify-end gap-2 border-t border-brand-border pt-4 dark:border-zinc-700">
                 <flux:modal.close><flux:button variant="ghost">{{ __('Annuler') }}</flux:button></flux:modal.close>
@@ -390,7 +410,7 @@
             <flux:heading level="2">{{ $noeudEnEditionId ? __('Modifier le département') : __('Ajouter un département') }}</flux:heading>
             <flux:text class="text-xs text-zinc-500">{{ __('Un département/direction — peut recevoir les courriers directement, ou contenir des Services.') }}</flux:text>
 
-            <x-organisation.champs-formulaire avec-service-pont :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
+            <x-organisation.champs-formulaire avec-service-pont :titre-chef="App\Models\OrganizationUnit::titreChef(App\Models\OrganizationUnit::TYPE_DEPARTMENT)" :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
 
             <div class="flex justify-end gap-2 border-t border-brand-border pt-4 dark:border-zinc-700">
                 <flux:modal.close><flux:button variant="ghost">{{ __('Annuler') }}</flux:button></flux:modal.close>
@@ -402,9 +422,9 @@
     <flux:modal name="organisation-form-service" class="w-full max-w-xl">
         <form wire:submit="enregistrerNoeud" class="space-y-6">
             <flux:heading level="2">{{ $noeudEnEditionId ? __('Modifier le service / l\'unité') : __('Ajouter un service / une unité') }}</flux:heading>
-            <flux:text class="text-xs text-zinc-500">{{ __('Un service/unité — rattaché à un département, peut lui-même contenir des Sous-services.') }}</flux:text>
+            <flux:text class="text-xs text-zinc-500">{{ __('Un service/unité — rattaché à un département, ou directement à une direction ou au site ; peut lui-même contenir des Sous-services.') }}</flux:text>
 
-            <x-organisation.champs-formulaire avec-service-pont creation-auto :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
+            <x-organisation.champs-formulaire avec-service-pont creation-auto :titre-chef="App\Models\OrganizationUnit::titreChef(App\Models\OrganizationUnit::TYPE_SERVICE)" :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
 
             <div class="flex justify-end gap-2 border-t border-brand-border pt-4 dark:border-zinc-700">
                 <flux:modal.close><flux:button variant="ghost">{{ __('Annuler') }}</flux:button></flux:modal.close>
@@ -418,7 +438,7 @@
             <flux:heading level="2">{{ $noeudEnEditionId ? __('Modifier le sous-service') : __('Ajouter un sous-service') }}</flux:heading>
             <flux:text class="text-xs text-zinc-500">{{ __('Un sous-service — le niveau le plus fin, rattaché à un Service.') }}</flux:text>
 
-            <x-organisation.champs-formulaire avec-service-pont creation-auto :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
+            <x-organisation.champs-formulaire avec-service-pont creation-auto :titre-chef="App\Models\OrganizationUnit::titreChef(App\Models\OrganizationUnit::TYPE_SUB_SERVICE)" :responsables="$this->responsablesPotentiels" :services-reels="$this->servicesReels" />
 
             <div class="flex justify-end gap-2 border-t border-brand-border pt-4 dark:border-zinc-700">
                 <flux:modal.close><flux:button variant="ghost">{{ __('Annuler') }}</flux:button></flux:modal.close>

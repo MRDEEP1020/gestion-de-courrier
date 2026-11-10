@@ -34,10 +34,6 @@ class CourrierBrouillonPolicy
             || ($brouillon->source === CourrierBrouillon::SOURCE_DOSSIER_SURVEILLE && $user->hasPrivilege('courriers.creer'));
     }
 
-    // Télécharger le fichier d'un brouillon (2026-09-23) : l'utiliser ET
-    // avoir courriers.telecharger — même privilège que pour un courrier.
-    public function telecharger(User $user, CourrierBrouillon $brouillon): bool
-    {
-        return $user->hasPrivilege('courriers.telecharger') && $this->utiliser($user, $brouillon);
-    }
+    // « Télécharger » retiré le 2026-11-09 : le document scanné se consulte
+    // en aperçu sécurisé seulement (voir CourrierPolicy::imprimerBordereau()).
 }

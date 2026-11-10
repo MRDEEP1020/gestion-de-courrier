@@ -142,6 +142,17 @@
                     <span x-text="totalRejetes"></span> {{ __('rejeté(s)') }}
                 </flux:text>
 
+                {{-- 2026-11-09 — scans enregistrés rangés sur ce poste (voir
+                     DECISIONS.md « Scans conservés et rangés sur le poste de
+                     numérisation »). --}}
+                <flux:text class="text-sm text-zinc-500" x-show="rangement === 'actif'">
+                    {{ __('Scans enregistrés rangés dans « Courriers enregistrés / année / mois » de ce dossier.') }}
+                    <span x-show="totalRanges > 0">(<span x-text="totalRanges"></span> {{ __('rangé(s) depuis l\'ouverture') }})</span>
+                </flux:text>
+                <div x-show="rangement === 'a_autoriser'" x-cloak>
+                    <flux:button size="xs" variant="outline" icon="folder" x-on:click="autoriserRangement()">{{ __('Autoriser le rangement des scans') }}</flux:button>
+                </div>
+
                 <flux:text class="text-sm font-medium" x-show="Object.keys(journal).length">{{ __('Documents détectés dans le dossier') }}</flux:text>
 
                 <ul class="max-h-48 space-y-1 overflow-y-auto text-sm" x-show="Object.keys(journal).length">
@@ -192,28 +203,38 @@
         @if ($this->importsDossierSurveille->isEmpty())
             <flux:text class="text-zinc-500">{{ __('Aucun document importé depuis un dossier surveillé pour l\'instant.') }}</flux:text>
         @else
-            <div class="overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+            {{-- Format de tableau commun (2026-10-29, « same format on all the
+                 tables of the project ») — celui de « Tous les courriers » (voir
+                 le commentaire de courrierList.blade.php) : en-têtes en petites
+                 capitales soulignés navy, lignes sur UNE seule
+                 ligne (nom de fichier coupé, complet au survol), 16 px en haut
+                 et en bas de chaque cellule. --}}
+            <div class="@container overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                 <table class="w-full text-sm">
-                    <thead class="bg-brand-table-header text-left text-sm font-medium text-zinc-600 dark:bg-zinc-800">
+                    <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
                         <tr>
-                            <th class="py-3 pl-4 pr-3">{{ __('Nom du fichier') }}</th>
+                            <th class="py-3 pr-3 @min-[60rem]:pr-5 pl-4">{{ __('Nom du fichier') }}</th>
                             @if ($peutToutVoir)
-                                <th class="py-3 pr-3">{{ __('Importé par') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Importé par') }}</th>
                             @endif
-                            <th class="py-3 pr-3">{{ __('Date d\'import') }}</th>
-                            <th class="py-3 pr-3">{{ __('Statut OCR') }}</th>
-                            <th class="py-3 pr-4">{{ __('Document') }}</th>
+                            <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5">{{ __('Date d\'import') }}</th>
+                            <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5">{{ __('Statut OCR') }}</th>
+                            <th class="w-px py-3 pr-4">{{ __('Document') }}</th>
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-brand-border dark:divide-zinc-700">
+                    <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
                         @foreach ($this->importsDossierSurveille as $import)
                             <tr wire:key="import-{{ $import->id }}" class="hover:bg-zinc-50 dark:hover:bg-zinc-800">
-                                <td class="py-3 pl-4 pr-3 font-medium">{{ $import->nom_original }}</td>
+                                <td class="{{ $peutToutVoir ? 'w-[60%]' : 'w-full' }} min-w-32 py-4 pr-3 @min-[60rem]:pr-5 pl-4 font-medium">
+                                    <div class="w-0 min-w-full truncate" title="{{ $import->nom_original }}">{{ $import->nom_original }}</div>
+                                </td>
                                 @if ($peutToutVoir)
-                                    <td class="py-3 pr-3 text-zinc-600 dark:text-zinc-400">{{ $import->creePar?->name ?? '—' }}</td>
+                                    <td class="w-[40%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-600 dark:text-zinc-400">
+                                        <div class="w-0 min-w-full truncate" title="{{ $import->creePar?->name ?? '—' }}">{{ $import->creePar?->name ?? '—' }}</div>
+                                    </td>
                                 @endif
-                                <td class="py-3 pr-3 text-zinc-600 dark:text-zinc-400">{{ $import->created_at->format('d/m/Y H:i') }}</td>
-                                <td class="py-3 pr-3">
+                                <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 text-zinc-600 dark:text-zinc-400">{{ $import->created_at->format('d/m/Y H:i') }}</td>
+                                <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5">
                                     {{-- Même badge inline que showCourrier.blade.php (OCR) —
                                          pas flux:badge color= (palette Tailwind nommée de
                                          Flux Pro, ne produit pas les hex exacts du système
@@ -223,15 +244,15 @@
                                         'en_cours' => 'bg-brand-info-light text-brand-info-dark',
                                         'echec_qualite', 'echec' => 'bg-brand-danger-light text-brand-danger-dark',
                                         default => 'bg-brand-disabled-bg text-brand-disabled-text',
-                                    } }} inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize">
+                                    } }} inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold capitalize">
                                         {{ str_replace('_', ' ', $import->ocr_statut) }}
                                     </span>
                                 </td>
-                                <td class="py-3 pr-4">
+                                <td class="whitespace-nowrap py-4 pr-4">
                                     @if ($import->finalise_le)
                                         <flux:text class="text-sm text-zinc-500">{{ __('Enregistré le :date', ['date' => $import->finalise_le->format('d/m/Y H:i')]) }}</flux:text>
                                     @elsecan('create', App\Models\Courrier::class)
-                                        <flux:button size="sm" variant="outline" :href="route('courriers.nouveau', ['brouillonId' => $import->id])" wire:navigate>
+                                        <flux:button size="xs" variant="outline" :href="route('courriers.nouveau', ['brouillonId' => $import->id])" wire:navigate>
                                             {{ __('Continuer l\'enregistrement') }}
                                         </flux:button>
                                     @else

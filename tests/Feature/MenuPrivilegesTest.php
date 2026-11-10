@@ -5,8 +5,10 @@ namespace Tests\Feature;
 use App\Livewire\Backend\DossierClassementList;
 use App\Livewire\Backend\ScanPremier;
 use App\Livewire\Backend\UserList;
+use App\Models\OrganizationUnit;
 use App\Models\Privilege;
 use App\Models\Profil;
+use App\Models\Service;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -46,9 +48,13 @@ class MenuPrivilegesTest extends TestCase
     public function test_chaque_profil_voit_ses_menus_par_defaut(): void
     {
         $attendus = [
+            // 2026-10-30 (« for the agent only, they don't need to see Tous
+            // les courriers, only Mes courriers at that place ») — l'Agent a
+            // « Mes courriers » au menu à la place de « Tous les courriers »
+            // (nouvelle clé courriers.menu_tous_les_courriers, sans l'Agent).
             'Agent' => [
-                'voit' => ['Tableau de bord', 'Tous les courriers', 'Enregistrer un courrier', 'Numérisation & OCR', 'Tous les dossiers', 'Archives', 'Notifications', 'Aide / Documentation'],
-                'pas' => ['Transferts', 'Affectations', 'Créer un dossier', 'Administration', 'Statistiques & Rapports', 'Recherche avancée'],
+                'voit' => ['Tableau de bord', 'Mes courriers', 'Enregistrer un courrier', 'Numérisation & OCR', 'Tous les dossiers', 'Archives', 'Notifications', 'Aide / Documentation'],
+                'pas' => ['Tous les courriers', 'Transferts', 'Affectations', 'Créer un dossier', 'Configuration', 'Statistiques & Rapports', 'Recherche avancée'],
             ],
             // "Transferts" retiré pour tous le 2026-09-24 (page supprimée,
             // doublon de "Tous les courriers" que ces profils voient déjà).
@@ -59,22 +65,22 @@ class MenuPrivilegesTest extends TestCase
             // rétroactivement en corrigeant ce test.
             'Collaborateur' => [
                 'voit' => ['Tableau de bord', 'Tous les courriers', 'Traitement & Réponse', 'Créer un dossier', 'Archives'],
-                'pas' => ['Transferts', 'Enregistrer un courrier', 'Numérisation & OCR', 'Affectations', 'Administration', 'Statistiques & Rapports'],
+                'pas' => ['Transferts', 'Enregistrer un courrier', 'Numérisation & OCR', 'Affectations', 'Configuration', 'Statistiques & Rapports'],
             ],
             'Responsable de service' => [
                 'voit' => ['Tous les courriers', 'Affectations', 'Statistiques & Rapports', 'Rapports'],
-                'pas' => ['Transferts', 'Enregistrer un courrier', 'Numérisation & OCR', 'Administration'],
+                'pas' => ['Transferts', 'Enregistrer un courrier', 'Numérisation & OCR', 'Configuration'],
             ],
-            // "Administration" déplacé de 'pas' vers 'voit' le 2026-10-08 :
-            // depuis le 2026-10-06 (voir DECISIONS.md "Délégation DGA/ADJ
-            // absents"), la DGA a par défaut administration.delegation_dga
-            // (gérer sa propre délégation en cas d'absence) — elle voit donc
-            // légitimement le groupe Administration, pour ce seul élément
-            // "Délégation DGA". Oublié lors de l'ajout de ce privilège,
-            // repéré en creusant une fausse alerte sur ce test.
-            'DGA' => [
-                'voit' => ['Tous les courriers', 'Statistiques & Rapports', 'Administration'],
-                'pas' => ['Transferts', 'Enregistrer un courrier', 'Numérisation & OCR', 'Affectations'],
+            // "Administration" revenu dans 'pas' le 2026-10-23 : la délégation
+            // DGA (seul élément d'administration de la DGA depuis le
+            // 2026-10-06) a été retirée avec le routage DGA (voir DECISIONS.md
+            // "Transfert direct au service et acceptation"). "Affectations"
+            // passé dans 'voit' le 2026-10-26 : le DG dirige la Direction
+            // Générale et affecte ses courriers (voir DECISIONS.md "Titres
+            // des chefs et Direction Générale").
+            'DG' => [
+                'voit' => ['Tous les courriers', 'Statistiques & Rapports', 'Affectations'],
+                'pas' => ['Transferts', 'Enregistrer un courrier', 'Numérisation & OCR', 'Configuration'],
             ],
             'Administrateur' => [
                 // "Référentiels (règles de classement)" raccourci en
@@ -82,7 +88,7 @@ class MenuPrivilegesTest extends TestCase
                 // fix largeur/scrollbar) — attente du test jamais mise à
                 // jour à ce moment-là, repéré en creusant une fausse alerte
                 // sur ce test le 2026-10-08.
-                'voit' => ['Administration', 'Utilisateurs & Accès', 'Profils', 'Organisation', 'Référentiels', 'Automatisation', 'Workflows', 'Paramètres système', 'Dossier surveillé', 'Sécurité & Audit', 'Numérisation & OCR'],
+                'voit' => ['Configuration', 'Utilisateurs & Accès', 'Profils', 'Organisation', 'Référentiels', 'Automatisation', 'Workflows', 'Paramètres système', 'Dossier surveillé', 'Sécurité & Audit', 'Numérisation & OCR'],
                 'pas' => ['Transferts'],
             ],
         ];
@@ -99,6 +105,20 @@ class MenuPrivilegesTest extends TestCase
         }
     }
 
+    // 2026-10-30 — sans l'entrée de menu, l'Agent garde la recherche de
+    // l'en-tête et la page de résultats (même route que « Tous les courriers »).
+    public function test_lagent_garde_la_recherche_sans_lentree_de_menu(): void
+    {
+        $agent = $this->avecProfil('Agent');
+
+        $this->sidebar($agent)
+            ->assertDontSee('Tous les courriers')
+            ->assertSee(__('Rechercher un courrier, une référence, un expéditeur…'));
+
+        $this->actingAs($agent)->get(route('courriers.rechercher', ['q' => 'test']))->assertOk();
+        $this->actingAs($agent)->get(route('courriers.mes-courriers'))->assertOk();
+    }
+
     // Aucun privilège : ni entrée ni titre de groupe vide — seuls
     // "Paramètres" et "Déconnexion" restent (ne jamais enfermer quelqu'un).
     public function test_sans_privilege_seuls_parametres_et_deconnexion_restent(): void
@@ -109,22 +129,24 @@ class MenuPrivilegesTest extends TestCase
             ->assertDontSee('Général')
             ->assertDontSee('Courriers')
             ->assertDontSee('Dossiers & Archives')
-            ->assertDontSee('Notifications')
+            // Le lien de la barre latérale, pas le mot : « Paramètres ›
+            // Notifications » (préférences, 2026-11-04) est ouvert à tous.
+            ->assertDontSee(route('notifications.index'))
             ->assertDontSee('Aide / Documentation');
     }
 
     // Un seul privilège suffit à faire apparaître son entrée ET son groupe
     // (corrige aussi l'ancien oubli : "Organisation" seul n'ouvrait pas
-    // le groupe "Administration").
+    // le groupe "Administration", renommé « Configuration » le 2026-11-04).
     public function test_un_seul_privilege_fait_apparaitre_son_groupe(): void
     {
         $this->sidebar($this->avecPrivileges(['organisation.view']))
-            ->assertSee('Administration')
+            ->assertSee('Configuration')
             ->assertSee('Organisation')
             ->assertDontSee('Utilisateurs & Accès');
 
         $this->sidebar($this->avecPrivileges(['administration.audit']))
-            ->assertSee('Administration')
+            ->assertSee('Configuration')
             ->assertSee('Sécurité & Audit')
             ->assertDontSee('Workflows');
     }
@@ -189,6 +211,12 @@ class MenuPrivilegesTest extends TestCase
         // Le bouton (pas le titre de la modale, toujours présent dans le DOM).
         $this->get(route('admin.utilisateurs'))->assertOk()->assertDontSee('wire:click="ouvrirAjout"', false);
         $this->get(route('admin.profils'))->assertForbidden();
+
+        // 2026-10-26 — tout compte a une entité (voir UserList::enregistrerEdition()).
+        $service = Service::factory()->create();
+        $departement = OrganizationUnit::factory()->create(['type' => OrganizationUnit::TYPE_DEPARTMENT, 'parent_id' => null, 'service_id' => $service->id]);
+        $agent->update(['service_id' => $service->id]);
+        $agent->organizationUnits()->attach($departement->id, ['is_primary' => true]);
 
         // Coordonnées modifiables, profil et niveau ignorés même si postés.
         Livewire::test(UserList::class)

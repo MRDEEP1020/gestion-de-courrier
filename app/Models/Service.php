@@ -37,6 +37,14 @@ class Service extends Model
         return $this->belongsTo(User::class, 'responsable_id');
     }
 
+    // Titre de son chef selon le niveau de l'entité reliée dans
+    // l'Organisation (voir OrganizationUnit::titreChef()) — « Responsable »
+    // si aucune entité n'y est reliée.
+    public function titreChef(): string
+    {
+        return OrganizationUnit::titreChef(OrganizationUnit::where('service_id', $this->id)->value('type'));
+    }
+
     public function courriers(): HasMany
     {
         return $this->hasMany(Courrier::class);

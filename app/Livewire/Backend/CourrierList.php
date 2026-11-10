@@ -2,6 +2,7 @@
 
 namespace App\Livewire\Backend;
 
+use App\Concerns\ChoixServiceCascade;
 use App\Models\Courrier;
 use App\Models\CourrierHistorique;
 use App\Models\DossierClassement;
@@ -13,14 +14,18 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\On;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\WithPagination;
+use RuntimeException;
 
 #[Title('Tous les courriers')]
 class CourrierList extends Component
 {
+    // Module 1/4 (2026-10-23) — service destinataire du transfert groupé.
+    use ChoixServiceCascade;
     use WithPagination;
 
     // Module 3 — "classement... retrouvable via plusieurs critères
@@ -131,15 +136,6 @@ class CourrierList extends Component
     // juste avant lui).
     public array $selectionnes = [];
 
-    // Module 1/4 — transfert en masse (2026-09-22, demande explicite de
-    // l'utilisateur : "no button to transfer courier in bulk why" — même
-    // action que MesCourriers::transfererSelection(), reciblée sur cette
-    // page). Curatée par l'administrateur pour CET utilisateur précis (voir
-    // DECISIONS.md "Destinataires de transfert"), pas dérivée d'un
-    // profil/privilège — même liste, même id brut revérifié avant d'agir
-    // (Règle n°6).
-    public ?int $destinataireChoisi = null;
-
     // Module 3/9 — classement en masse (2026-09-22, demande explicite de
     // l'utilisateur : "les trois" points d'entrée pour "mettre un courrier
     // dans un dossier créé"). Id brut, revérifié contre
@@ -194,12 +190,6 @@ class CourrierList extends Component
             : array_values(array_unique([...$this->selectionnes, ...$idsPage]));
     }
 
-    #[Computed]
-    public function destinatairesTransfert()
-    {
-        return Auth::user()->destinatairesTransfert()->orderBy('name')->get(['users.id', 'users.name']);
-    }
-
     // Demande explicite de l'utilisateur (2026-09-22) : le bouton "Transférer
     // la sélection" lui-même reste visible/actionnable pour n'importe quel
     // profil ayant AU MOINS un privilège de transfert (jamais un rôle en
@@ -214,26 +204,22 @@ class CourrierList extends Component
         return $utilisateur->hasPrivilege('courriers.transferer_tout') || $utilisateur->hasPrivilege('courriers.transferer_propre');
     }
 
-    // Même logique que MesCourriers::transfererSelection() : le destinataire
-    // choisi est revérifié contre les destinataires autorisés de
-    // l'utilisateur (jamais fait confiance à l'ID posté), puis CHAQUE
-    // courrier de la sélection est revérifié individuellement via
-    // CourrierPolicy::transferer() (privilège + niveau de confidentialité +
-    // accès dossier, TOUS déjà appliqués par cette ability) — un courrier
+    // Même logique que MesCourriers::transfererSelection() (2026-10-23, voir
+    // DECISIONS.md "Transfert direct au service et acceptation") : UN service
+    // choisi par la cascade, revérifié côté serveur, puis CHAQUE courrier de
+    // la sélection revérifié individuellement via CourrierPolicy::transferer()
+    // (privilège + niveau de confidentialité + accès dossier) — un courrier
     // que cet utilisateur ne peut pas transférer, ou qui n'est plus au bon
-    // statut, est silencieusement ignoré plutôt que de faire échouer tout
-    // le lot.
+    // statut, est ignoré plutôt que de faire échouer tout le lot.
     public function transfererSelection(WorkflowService $workflow): void
     {
-        $utilisateur = Auth::user();
-        $destinataire = $utilisateur->destinatairesTransfert()->where('users.id', $this->destinataireChoisi)->first();
+        $service = $this->serviceChoisiOuEchec();
 
-        if (! $destinataire) {
-            $this->addError('destinataireChoisi', __('Choisissez un destinataire.'));
-
+        if (! $service) {
             return;
         }
 
+        $utilisateur = Auth::user();
         $transferes = 0;
 
         foreach (Courrier::query()->whereIn('id', $this->selectionnes)->where('statut', 'en_attente_de_transfert')->get() as $courrier) {
@@ -241,18 +227,23 @@ class CourrierList extends Component
                 continue;
             }
 
-            $workflow->transferer($courrier, $destinataire, $utilisateur);
-            $transferes++;
+            try {
+                $workflow->transfererAuService($courrier, $service, $utilisateur);
+                $transferes++;
+            } catch (RuntimeException $e) {
+                report($e);
+            }
         }
 
         $this->selectionnes = [];
-        $this->reset('destinataireChoisi');
+        $this->reinitialiserCascade();
         unset($this->resultats);
 
+        Flux::modal('transferer-selection-liste-modal')->close();
         Flux::toast(
             variant: $transferes > 0 ? 'success' : 'warning',
             text: $transferes > 0
-                ? __(':n courrier(s) transféré(s) à :nom.', ['n' => $transferes, 'nom' => $destinataire->name])
+                ? __(':n courrier(s) transféré(s) au service :nom — en attente de son acceptation.', ['n' => $transferes, 'nom' => $service->nom])
                 : __('Aucun courrier sélectionné n\'a pu être transféré.'),
         );
     }
@@ -328,9 +319,11 @@ class CourrierList extends Component
 
     // Vidé à chaque changement de filtre pour ne jamais rester bloqué sur
     // une page 2+ devenue vide après un filtrage plus restrictif.
+    // Les champs de la cascade du transfert (modale) ne sont pas des filtres :
+    // ils ne doivent pas renvoyer la liste à la page 1 pendant le choix.
     public function updated($nom): void
     {
-        if ($nom !== 'page') {
+        if ($nom !== 'page' && ! in_array($nom, ['siteSelectionneId', 'directionSelectionneeId', 'departementSelectionneId', 'uniteSelectionneeId'], true)) {
             $this->resetPage();
         }
     }
@@ -464,9 +457,19 @@ class CourrierList extends Component
             // performance sur un jeu de données de test minuscule.
             // Recherche dans le texte OCR : courriers.voir_texte_ocr requis
             // (2026-09-23) — ignorée côté serveur sinon, même si postée.
-            ->when($this->contenu !== '' && $this->peutRechercherContenu, fn ($q) => $q->getConnection()->getDriverName() === 'mysql'
-                ? $q->whereFullText('texte_ocr', $this->contenu, ['mode' => 'boolean'])
-                : $q->where('texte_ocr', 'like', "%{$this->contenu}%"))
+            ->when($this->contenu !== '' && $this->peutRechercherContenu, fn ($q) => $q
+                ->where(fn ($q) => $q->getConnection()->getDriverName() === 'mysql'
+                    ? $q->whereFullText('texte_ocr', $this->contenu, ['mode' => 'boolean'])
+                    : $q->where('texte_ocr', 'like', "%{$this->contenu}%"))
+                // 2026-10-23 — même règle que CourrierPolicy::voirContenu() :
+                // un courrier transféré pas encore accepté ne doit pas être
+                // trouvable par son contenu par le service destinataire
+                // (seuls le créateur, l'agent qui l'a transféré et
+                // voir_tout y ont accès).
+                ->unless(Auth::user()->hasPrivilege('courriers.voir_tout'), fn ($q) => $q->where(fn ($q) => $q
+                    ->where('statut', '!=', 'en_cours_de_transfert')
+                    ->orWhereHas('historiques', fn ($q) => $q->where('action', 'creation')->where('auteur_id', Auth::id()))
+                    ->orWhereHas('dernierTransfert', fn ($q) => $q->where('transfere_par_id', Auth::id())))))
             ->when($this->typeDocument !== '', fn ($q) => $q->where('type_document', 'like', "%{$this->typeDocument}%"))
             ->when($this->confidentialite !== '', fn ($q) => $q->where('confidentialite', $this->confidentialite))
             ->when($this->priorite !== '', fn ($q) => $q->where('priorite', $this->priorite))
@@ -606,6 +609,14 @@ class CourrierList extends Component
 
         return ($debut > 0 ? '…' : '').$extrait.(mb_strlen($courrier->texte_ocr) > $debut + mb_strlen($extrait) ? '…' : '');
     }
+
+    // 2026-10-27 (« comme Outlook : quand quelqu'un envoie un courrier, il
+    // arrive directement sans que l'utilisateur rafraîchisse ») — une
+    // notification reçue en direct (NotificationBell::notificationRecue(),
+    // via Reverb) relance le rendu : la liste se recharge avec le nouveau
+    // courrier, sans recharger la page ni sonder le serveur (Règle n°2).
+    #[On('notifications-mises-a-jour')]
+    public function actualiserEnDirect(): void {}
 
     public function render()
     {

@@ -1,22 +1,22 @@
 <?php
 
-use App\Http\Controllers\BrouillonDocumentApercuController;
-use App\Http\Controllers\BrouillonDocumentDownloadController;
+use App\Http\Controllers\ApercuManifesteController;
+use App\Http\Controllers\ApercuModeleDechargeController;
+use App\Http\Controllers\ApercuPageController;
 use App\Http\Controllers\CourrierAccuseReceptionController;
 use App\Http\Controllers\CourrierBordereauController;
-use App\Http\Controllers\CourrierDocumentApercuController;
-use App\Http\Controllers\CourrierDocumentDownloadController;
 use App\Http\Controllers\LocaleController;
-use App\Http\Controllers\PieceJointeDownloadController;
+use App\Http\Controllers\TransfertDechargeController;
+use App\Http\Controllers\UtilisateurPhotoController;
 use App\Livewire\Backend\CourrierCalendar;
 use App\Livewire\Backend\CourrierList;
 use App\Livewire\Backend\CourriersEnregistres;
 use App\Livewire\Backend\Dashboard;
-use App\Livewire\Backend\DelegationDgaIndex;
 use App\Livewire\Backend\DossierClassementList;
 use App\Livewire\Backend\DossierSurveille;
 use App\Livewire\Backend\EditForm;
 use App\Livewire\Backend\MesCourriers;
+use App\Livewire\Backend\Statistiques;
 use App\Livewire\Backend\NotificationsIndex;
 use App\Livewire\Backend\OrganisationIndex;
 use App\Livewire\Backend\ParametreSysteme;
@@ -25,8 +25,10 @@ use App\Livewire\Backend\RegistrationForm;
 use App\Livewire\Backend\RegleList;
 use App\Livewire\Backend\ScanForm;
 use App\Livewire\Backend\ScanPremier;
+use App\Livewire\Backend\SecuriteAudit;
 use App\Livewire\Backend\ShowCourrier;
 use App\Livewire\Backend\UserList;
+use App\Services\ApercuSecurise;
 use Illuminate\Support\Facades\Route;
 
 Route::view('/', 'welcome')->name('home');
@@ -50,12 +52,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::livewire('notifications', NotificationsIndex::class)->name('notifications.index');
 
     Route::livewire('courriers/nouveau', RegistrationForm::class)->name('courriers.nouveau');
-    // Module 1/2 — aperçu du document scanné AVANT la création du Courrier
-    // (panneau "Aperçu du document" du formulaire, voir DECISIONS.md
-    // "Formulaire d'enregistrement en une page") — même principe que
-    // courriers.document.apercu, pour un brouillon.
-    Route::get('brouillons/{brouillon}/apercu', BrouillonDocumentApercuController::class)->name('brouillons.apercu');
-    Route::get('brouillons/{brouillon}/telecharger', BrouillonDocumentDownloadController::class)->name('brouillons.telecharger');
+    // Module 9 — aperçu sécurisé (2026-11-09, voir DECISIONS.md « Fichiers :
+    // chiffrement, aperçu sécurisé, aucun téléchargement ») : pages images
+    // filigranées d'un courrier, d'une pièce jointe ou d'un brouillon. AUCUNE
+    // route ne sert plus le fichier original (anciennes routes
+    // courriers.document, courriers.document.apercu, pieces-jointes.telecharger,
+    // brouillons.apercu et brouillons.telecharger supprimées).
+    Route::get('apercus/{type}/{id}', ApercuManifesteController::class)
+        ->whereIn('type', ApercuSecurise::TYPES)->whereNumber('id')->name('apercus.manifeste');
+    Route::get('apercus/{type}/{id}/{page}', ApercuPageController::class)
+        ->whereIn('type', ApercuSecurise::TYPES)->whereNumber(['id', 'page'])->name('apercus.page');
+    // Photo de profil servie par l'application (bucket privé, voir
+    // UtilisateurPhotoController) — 2026-10-26.
+    Route::get('utilisateurs/{user}/photo', UtilisateurPhotoController::class)->name('utilisateurs.photo');
     // Module 1 — "Cas particulier : courrier confidentiel" (specifications-modules-GEC.md).
     // 2026-10-07 — sert désormais le MÊME composant que courriers.nouveau
     // (voir DECISIONS.md "fusion explicitement demandée") : ce nom de
@@ -84,6 +93,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // receptionist") : ses courriers entrant, par sous-statut de transfert.
     // Même raison que ci-dessus : DOIT rester avant la route générique.
     Route::livewire('courriers/mes-courriers', MesCourriers::class)->name('courriers.mes-courriers');
+    // Module 10 étendu (2026-10-30) — « Dashboard statistiques ».
+    Route::livewire('statistiques', Statistiques::class)->name('statistiques.index');
     // Module 1/4/8 — "Courriers enregistrés" (maquette GPT, 2026-09-16,
     // voir DECISIONS.md "Navigation (navbar + sidebar)") : mêmes 3 onglets
     // que "Mes courriers" ci-dessus, mais à l'échelle de ce que
@@ -95,9 +106,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::livewire('courriers/{courrierId}/numeriser', ScanForm::class)->name('courriers.numeriser');
     Route::get('courriers/{courrier}/bordereau', CourrierBordereauController::class)->name('courriers.bordereau');
     Route::get('courriers/{courrier}/accuse-reception', CourrierAccuseReceptionController::class)->name('courriers.accuse-reception');
-    Route::get('courriers/{courrier}/document', CourrierDocumentDownloadController::class)->name('courriers.document');
-    Route::get('courriers/{courrier}/document/apercu', CourrierDocumentApercuController::class)->name('courriers.document.apercu');
-    Route::get('pieces-jointes/{pieceJointe}/telecharger', PieceJointeDownloadController::class)->name('pieces-jointes.telecharger');
+    // Décharge imprimable de la remise de l'original au service (2026-10-27).
+    Route::get('transferts/{transfert}/decharge', TransfertDechargeController::class)->name('transferts.decharge');
     Route::livewire('courriers/{courrierId}', ShowCourrier::class)->name('courriers.show');
 
     // Module 3/9 — "Dossiers & Archives" (arborescence de classement +
@@ -125,12 +135,16 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // "SLA & Alertes" (jusque-là "Bientôt disponible") par une vraie page ;
     // numéro de référence + SLA, éditables sans redéploiement.
     Route::livewire('admin/parametres', ParametreSysteme::class)->name('admin.parametres');
+    // Aperçu PDF du modèle de décharge saisi, avant enregistrement (2026-10-28).
+    Route::post('admin/parametres/decharge/apercu', ApercuModeleDechargeController::class)->name('admin.parametres.decharge.apercu');
     // Module 1/2 — configuration du dossier surveillé (2026-09-24, voir
     // DECISIONS.md "Dossier surveillé : configuration dans l'administration").
     Route::livewire('admin/dossier-surveille', DossierSurveille::class)->name('admin.dossier-surveille');
-    // Module 1/4 — délégation DGA/ADJ → RH en cas d'absence simultanée
-    // (2026-10-06, voir DECISIONS.md "Délégation DGA/ADJ absents").
-    Route::livewire('admin/delegation-dga', DelegationDgaIndex::class)->name('admin.delegation-dga');
+    // Module 9 — Sécurité & Audit (2026-10-30, voir DECISIONS.md "Archivage :
+    // conformité") : journal des consultations, intégrité, conservation.
+    Route::livewire('admin/securite-audit', SecuriteAudit::class)->name('admin.securite-audit');
+    // 2026-10-23 — page "Délégation DGA" retirée avec le routage DGA (voir
+    // DECISIONS.md "Transfert direct au service et acceptation").
 });
 
 require __DIR__.'/settings.php';

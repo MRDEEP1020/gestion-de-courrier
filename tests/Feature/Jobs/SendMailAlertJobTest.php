@@ -146,6 +146,41 @@ class SendMailAlertJobTest extends TestCase
         $this->assertSame(2, CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'alerte_retard')->count());
     }
 
+    public function test_les_relances_sla_suivent_lintervalle_personnel_de_chaque_destinataire(): void
+    {
+        Notification::fake();
+        $this->collaborateur->forceFill(['preferences_notifications' => ['sla_relance_jours' => 1]])->save();
+        $this->courrierAffecte(-1);
+
+        $this->executer();
+        $this->travel(1)->days();
+        $this->executer();
+
+        Notification::assertSentToTimes($this->collaborateur, CourrierEnRetardNotification::class, 2);
+        Notification::assertSentToTimes($this->responsable, CourrierEnRetardNotification::class, 1);
+    }
+
+    public function test_une_relance_desactivee_peut_reprendre_sans_attendre_le_delai_global(): void
+    {
+        Notification::fake();
+        $this->collaborateur->forceFill(['preferences_notifications' => [
+            'alertes_sla' => ['email' => false, 'application' => false],
+            'sla_relance_jours' => 1,
+        ]])->save();
+        $courrier = $this->courrierAffecte(-1);
+
+        $this->executer();
+        Notification::assertNotSentTo($this->collaborateur, CourrierEnRetardNotification::class);
+
+        $this->collaborateur->forceFill(['preferences_notifications' => [
+            'alertes_sla' => ['email' => true, 'application' => true],
+            'sla_relance_jours' => 1,
+        ]])->save();
+        $this->executer();
+
+        Notification::assertSentTo($this->collaborateur, CourrierEnRetardNotification::class, fn ($n) => $n->courrier->is($courrier));
+    }
+
     // Une nouvelle échéance ré-arme les alertes (délai prolongé).
     public function test_prolonger_lecheance_rearme_les_alertes(): void
     {

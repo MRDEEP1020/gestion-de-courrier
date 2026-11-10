@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Courrier;
+use App\Models\CourrierConsultation;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Gate;
@@ -30,6 +31,9 @@ class CourrierAccuseReceptionController extends Controller
 
         $pdf = Pdf::loadView('pdf.accuse-reception', ['courrier' => $courrier, 'auteur' => $auteur])
             ->setPaper('a5');
+
+        // 2026-10-30 — journal des consultations (conformité de l'archivage).
+        CourrierConsultation::enregistrer($courrier->id, 'impression');
 
         return $pdf->stream("accuse-reception-{$courrier->numero_reference}.pdf");
     }

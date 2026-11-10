@@ -199,24 +199,39 @@ class DossierClassementList extends Component
     public function courriersDuNoeud()
     {
         if ($this->dossierId !== null && $this->dossierSelectionne === null) {
-            // Sélection invalide/non autorisée — retombe sur "Tous les dossiers".
+            // Sélection invalide/non autorisée — retombe sur la racine.
             $this->dossierId = null;
         }
 
         return $this->portee()
+            // Si 'generaux', montre uniquement les courriers non-classés
             ->when($this->noeud === 'generaux', fn ($q) => $q->whereNull('dossier_classement_id'))
+            // Si 'archives', montre uniquement les archives
             ->when($this->noeud === 'archives', fn ($q) => $q->where('statut', 'archive'))
+            // Si un dossier spécifique est ouvert, filtre par ce dossier
             ->when($this->noeud === '' && $this->dossierId !== null, fn ($q) => $q->where('dossier_classement_id', $this->dossierId))
+            // S'IL N'Y A PAS DE SÉLECTION (noeud vide, dossier null), TOUS les courriers s'affichent par défaut
             ->with('service')
             ->latest('date_mouvement')
             ->paginate(10);
     }
 
+
     #[Computed]
     public function services()
     {
-        return Service::query()->where('actif', true)->orderBy('nom')->get(['id', 'nom']);
+        $user = Auth::user();
+
+        return Service::query()
+            ->where('actif', true)
+            ->when($user->service_id, function ($query, $serviceId) {
+                // Filters to only show the authenticated user's service
+                return $query->where('id', $serviceId);
+            })
+            ->orderBy('nom')
+            ->get(['id', 'nom']);
     }
+
 
     // ===== Créer un dossier =====
 
@@ -539,21 +554,28 @@ class DossierClassementList extends Component
     #[Computed]
     public function courriersDisponiblesPourAjout()
     {
-        if (trim($this->rechercheCourriersAAjouter) === '' || $this->dossierSelectionne === null) {
-            return collect();
+        // Don't execute if no valid folder is selected to receive the courriers
+        if ($this->dossierSelectionne === null) {
+            return $this->portee()->whereRaw('1 = 0')->paginate(10, ['*'], 'courriersAAjouterPage');
         }
 
-        $recherche = $this->rechercheCourriersAAjouter;
+        $query = $this->portee()
+            ->where(fn ($q) => $q->whereNull('dossier_classement_id')->orWhere('dossier_classement_id', '!=', $this->dossierId));
 
-        return $this->portee()
-            ->where(fn ($q) => $q->whereNull('dossier_classement_id')->orWhere('dossier_classement_id', '!=', $this->dossierId))
-            ->where(fn ($q) => $q
+        // Apply filters only if the user has typed something
+        if (trim($this->rechercheCourriersAAjouter) !== '') {
+            $recherche = $this->rechercheCourriersAAjouter;
+            $query->where(fn ($q) => $q
                 ->where('numero_reference', 'like', "%{$recherche}%")
                 ->orWhere('objet', 'like', "%{$recherche}%")
-                ->orWhere('expediteur_nom', 'like', "%{$recherche}%"))
-            ->orderByDesc('date_mouvement')
+                ->orWhere('expediteur_nom', 'like', "%{$recherche}%"));
+        }
+
+        // Always returns a Paginator instance, preventing the "links does not exist" error
+        return $query->orderByDesc('date_mouvement')
             ->paginate(10, ['*'], 'courriersAAjouterPage');
     }
+
 
     public function ouvrirAjoutCourriers(): void
     {

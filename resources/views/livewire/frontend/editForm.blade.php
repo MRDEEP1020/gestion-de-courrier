@@ -108,7 +108,7 @@
                                 </flux:select>
                             @else
                                 <flux:text class="self-end pb-2 text-sm text-zinc-500">
-                                    {{ __('Le service sera choisi par le DGA/ADJ DGA au moment de valider le transfert.') }}
+                                    {{ __('Le service d\'un courrier entrant est choisi au moment de son transfert au service.') }}
                                 </flux:text>
                             @endif
 
@@ -131,7 +131,7 @@
                                 @endif
                             </flux:field>
 
-                            <flux:input type="date" wire:model="form.date_mouvement" :label="__('Date de réception / d\'envoi')" required />
+                            <flux:input type="date" wire:model="form.date_mouvement" :label="__('Date de réception')" required />
 
                             <flux:select wire:model="form.priorite" :label="__('Priorité')" required>
                                 <flux:select.option value="basse">{{ __('Basse') }}</flux:select.option>
@@ -173,12 +173,6 @@
                             <flux:input wire:model="dossierReference" :label="__('Dossier lié')" placeholder="{{ __('ex. DOS-2026-0001') }}" />
 
                             <flux:input type="number" wire:model="slaJours" :label="__('SLA (jours)')" min="0" max="365" />
-
-                            <flux:select wire:model="serviceResponsableId" :label="__('Service responsable')" placeholder="{{ __('— Non renseigné —') }}">
-                                @foreach ($this->services as $service)
-                                    <flux:select.option value="{{ $service->id }}">{{ $service->nom }}</flux:select.option>
-                                @endforeach
-                            </flux:select>
                         </div>
                     </div>
 
@@ -229,36 +223,28 @@
                     @elseif ($this->courrier->piecesJointes->isEmpty())
                         <flux:text class="text-zinc-500">{{ __('Aucune pièce jointe pour ce courrier.') }}</flux:text>
                     @else
-                        {{-- Liens de téléchargement derrière courriers.telecharger (2026-09-23). --}}
-                        @php $peutTelecharger = auth()->user()->can('telecharger', $this->courrier); @endphp
+                        {{-- 2026-11-09 — consultation en aperçu sécurisé, plus aucun téléchargement. --}}
+                        @php $peutVoirContenuPj = auth()->user()->can('voirContenu', $this->courrier); @endphp
                         <ul class="space-y-2">
                             @foreach ($this->courrier->piecesJointes as $pieceJointe)
-                                <li class="flex items-center justify-between gap-2">
-                                    <div class="flex items-center gap-2">
-                                        <flux:icon name="paper-clip" class="size-4 shrink-0 text-zinc-400" />
-                                        @if ($peutTelecharger)
-                                            <flux:link :href="route('pieces-jointes.telecharger', $pieceJointe)">{{ $pieceJointe->nom_original }}</flux:link>
-                                        @else
-                                            <span>{{ $pieceJointe->nom_original }}</span>
-                                        @endif
-                                    </div>
-                                    @if ($peutTelecharger)
-                                        <flux:button size="sm" variant="ghost" icon="arrow-down-tray" :href="route('pieces-jointes.telecharger', $pieceJointe)" :aria-label="__('Télécharger')" />
+                                <li class="flex items-center gap-2">
+                                    <flux:icon name="paper-clip" class="size-4 shrink-0 text-zinc-400" />
+                                    @if ($peutVoirContenuPj)
+                                        <x-apercu.piece-jointe :piece-jointe="$pieceJointe" suffixe="edition" :reference="$this->courrier->numero_reference" />
+                                    @else
+                                        <span>{{ $pieceJointe->nom_original }}</span>
                                     @endif
                                 </li>
                             @endforeach
                         </ul>
                     @endif
 
-                    <flux:separator class="my-4" text="{{ __('Ajouter une pièce jointe') }}" />
+                    <flux:separator class="my-4" text="{{ __('Ajouter des pièces jointes') }}" />
 
                     <flux:field>
-                        <flux:label>{{ __('Fichier (optionnel — copie déjà numérique, ex. pièce jointe d\'un email)') }}</flux:label>
-                        <input type="file" wire:model="pieceJointe" accept=".pdf,.jpg,.jpeg,.png"
-                            class="block w-full text-sm text-zinc-600 file:mr-4 file:rounded-lg file:border-0 file:bg-zinc-100 file:px-4 file:py-2 file:text-sm file:font-medium hover:file:bg-zinc-200 dark:text-zinc-300 dark:file:bg-zinc-700 dark:hover:file:bg-zinc-600" />
-                        <flux:description>{{ __('PDF, JPG ou PNG, 10 Mo maximum.') }}</flux:description>
-                        <flux:error name="pieceJointe" />
-                        <div wire:loading wire:target="pieceJointe" class="mt-1 text-sm text-zinc-500">{{ __('Envoi en cours…') }}</div>
+                        <flux:label>{{ __('Fichiers (optionnel — copies déjà numériques, ex. pièces jointes d\'un email)') }}</flux:label>
+                        <flux:description>{{ __('Plusieurs fichiers possibles, en une ou plusieurs fois. PDF, JPG ou PNG, 10 Mo chacun, 10 fichiers maximum.') }}</flux:description>
+                        @include('partials.pieces-jointes-ajout')
                     </flux:field>
                 </div>
             </div>
@@ -278,7 +264,7 @@
 
                     <div class="p-4">
                         @if ($this->courrier->fichier_path)
-                            @php $telechargerUrlEdition = auth()->user()->can('telecharger', $this->courrier) ? route('courriers.document', $this->courrier) : null; @endphp
+                            {{-- 2026-11-09 — aperçu sécurisé (pages filigranées), plus le fichier. --}}
                             <div
                                 wire:ignore
                                 x-data="{
@@ -286,7 +272,7 @@
                                     zoom: 100,
                                     pageActuelle: 1,
                                     numPages: 1,
-                                    url: @js(route('courriers.document.apercu', $this->courrier)),
+                                    url: @js(route('apercus.manifeste', ['courrier', $this->courrier->id])),
                                     instance() {
                                         const apercu = window.DocumentPreview.obtenir(this.url + ':edition');
                                         apercu.boite = document.getElementById('apercu-edition-corps');
@@ -359,7 +345,6 @@
                                     variant="panneau"
                                     :nom-fichier="basename($this->courrier->fichier_path)"
                                     agrandir-evenement="apercu-edition-agrandi"
-                                    :telecharger-url="$telechargerUrlEdition"
                                 />
                                 <x-apercu.visionneuse id="apercu-edition" />
                             </div>
@@ -374,7 +359,7 @@
                                 x-data="{
                                     erreur: null,
                                     zoom: 100,
-                                    url: @js(route('courriers.document.apercu', $this->courrier)),
+                                    url: @js(route('apercus.manifeste', ['courrier', $this->courrier->id])),
                                     pageActuelle: 1,
                                     numPages: 1,
                                     instance() {
@@ -453,7 +438,6 @@
                                             variant="modale"
                                             :nom-fichier="basename($this->courrier->fichier_path)"
                                             :numero-reference="$this->courrier->numero_reference"
-                                            :telecharger-url="$telechargerUrlEdition"
                                             fermer-modale="apercu-edition-agrandi"
                                         />
 
@@ -472,7 +456,6 @@
                                                     :destinataire="$this->courrier->destinataire"
                                                     :date="$this->courrier->date_mouvement"
                                                     :nom-fichier="basename($this->courrier->fichier_path)"
-                                                    :telecharger-url="$telechargerUrlEdition"
                                                 />
                                             </div>
                                         </div>

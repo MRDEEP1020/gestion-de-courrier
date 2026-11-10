@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\On;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 
@@ -150,6 +151,15 @@ class Dashboard extends Component
         }
 
         return Auth::user()->notifications()->latest()->take(3)->get();
+    }
+
+    // 2026-10-27 — carte « Notifications » rafraîchie en direct quand la
+    // cloche reçoit une nouvelle notification (événement relayé par
+    // NotificationBell::notificationRecue()).
+    #[On('notifications-mises-a-jour')]
+    public function rafraichirNotifications(): void
+    {
+        unset($this->notificationsRecentes);
     }
 
     // Module 10 — "délai moyen" (PRD §3.10), pré-calculé par

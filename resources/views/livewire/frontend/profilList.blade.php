@@ -31,44 +31,50 @@
         <flux:input wire:model.live.debounce.400ms="recherche" icon="magnifying-glass" :placeholder="__('Rechercher un profil…')" />
     </div>
 
-    <div class="mt-6 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+    {{-- Format de tableau commun (2026-10-29, « same format on all the tables
+         of the project ») — celui de « Tous les courriers » (voir le
+         commentaire de courrierList.blade.php) : en-têtes en petites capitales
+         soulignés navy, lignes sur UNE seule ligne (pastille
+         du profil réduite, badges de répartition côte à côte), 16 px en haut
+         et en bas de chaque cellule, bouton d'actions centré. --}}
+    <div class="@container mt-6 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
         <table class="w-full text-sm">
-            <thead class="bg-brand-table-header text-left text-sm font-medium text-zinc-600 dark:bg-zinc-800">
+            <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
                 <tr>
-                    <th class="py-3 pl-4 pr-3">{{ __('Profil') }}</th>
-                    <th class="py-3 pr-3">{{ __('Utilisateurs') }}</th>
-                    <th class="py-3 pr-3">{{ __('Permissions') }}</th>
-                    <th class="py-3 pr-3">{{ __('Répartition') }}</th>
-                    <th class="py-3 pr-4 text-right">{{ __('Actions') }}</th>
+                    <th class="py-3 pr-3 @min-[60rem]:pr-5 pl-4">{{ __('Profil') }}</th>
+                    <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5">{{ __('Utilisateurs') }}</th>
+                    <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Permissions') }}</th>
+                    <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Répartition') }}</th>
+                    <th class="relative w-px py-3 pr-4"><span class="sr-only">{{ __('Actions') }}</span></th>
                 </tr>
             </thead>
-            <tbody class="divide-y divide-brand-border dark:divide-zinc-700">
+            <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
                 @forelse ($this->profils as $profil)
                     <tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/60">
-                        <td class="py-3 pl-4 pr-3">
-                            <div class="flex items-center gap-2.5">
-                                <div class="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-accent-pale text-brand-accent">
-                                    <flux:icon.identification class="size-4" />
+                        <td class="w-full min-w-36 py-4 pr-3 @min-[60rem]:pr-5 pl-4">
+                            <div class="flex w-0 min-w-full items-center gap-2">
+                                <div class="flex size-6 shrink-0 items-center justify-center rounded-full bg-brand-accent-pale text-brand-accent">
+                                    <flux:icon.identification class="size-3.5" />
                                 </div>
-                                <span class="font-medium">{{ $profil->nom }}</span>
+                                <span class="min-w-0 truncate font-medium" title="{{ $profil->nom }}">{{ $profil->nom }}</span>
                             </div>
                         </td>
-                        <td class="py-3 pr-3 text-zinc-500">{{ trans_choice(':n utilisateur|:n utilisateurs', $profil->users_count, ['n' => $profil->users_count]) }}</td>
-                        <td class="py-3 pr-3">
-                            <span class="inline-flex items-center rounded-full bg-brand-accent-pale px-2 py-0.5 text-xs font-medium text-brand-accent">
+                        <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">{{ trans_choice(':n utilisateur|:n utilisateurs', $profil->users_count, ['n' => $profil->users_count]) }}</td>
+                        <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5">
+                            <span class="inline-flex items-center rounded-md bg-brand-accent-pale px-2 py-0.5 text-xs font-semibold text-brand-accent">
                                 {{ $profil->privileges->count() }} / {{ $this->permissionsCatalogue->count() }}
                             </span>
                         </td>
-                        <td class="py-3 pr-3">
-                            <div class="flex flex-wrap gap-1 text-xs">
-                                <span class="inline-flex items-center rounded-full bg-brand-accent/10 px-2 py-0.5 text-brand-accent">{{ __('Lecture') }} {{ $profil->privileges->where('type', 'lecture')->count() }}</span>
-                                <span class="inline-flex items-center rounded-full bg-brand-warning/10 px-2 py-0.5 text-brand-warning">{{ __('Écriture') }} {{ $profil->privileges->where('type', 'ecriture')->count() }}</span>
-                                <span class="inline-flex items-center rounded-full bg-brand-danger/10 px-2 py-0.5 text-brand-danger">{{ __('Administratif') }} {{ $profil->privileges->where('type', 'administratif')->count() }}</span>
+                        <td class="py-4 pr-3 @min-[60rem]:pr-5">
+                            <div class="flex gap-1 whitespace-nowrap text-xs font-semibold">
+                                <span class="inline-flex items-center rounded-md bg-brand-accent/10 px-2 py-0.5 text-brand-accent">{{ __('Lecture') }} {{ $profil->privileges->where('type', 'lecture')->count() }}</span>
+                                <span class="inline-flex items-center rounded-md bg-brand-warning/10 px-2 py-0.5 text-brand-warning">{{ __('Écriture') }} {{ $profil->privileges->where('type', 'ecriture')->count() }}</span>
+                                <span class="inline-flex items-center rounded-md bg-brand-danger/10 px-2 py-0.5 text-brand-danger">{{ __('Administratif') }} {{ $profil->privileges->where('type', 'administratif')->count() }}</span>
                             </div>
                         </td>
-                        <td class="py-3 pr-4 text-right">
+                        <td class="py-4 pr-4 text-center">
                             <flux:dropdown position="bottom" align="end">
-                                <flux:button size="sm" variant="ghost" icon="ellipsis-horizontal" aria-label="{{ __('Actions') }}" />
+                                <flux:button size="xs" variant="ghost" icon="ellipsis-horizontal" square aria-label="{{ __('Actions') }}" />
                                 <flux:menu>
                                     <flux:menu.item icon="shield-check" wire:click="ouvrirPermissions({{ $profil->id }})">{{ __('Gérer les permissions') }}</flux:menu.item>
                                     @can('gererUtilisateurs', App\Models\Privilege::class)

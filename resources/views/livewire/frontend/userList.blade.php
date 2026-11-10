@@ -70,50 +70,62 @@
 
     {{-- Table — même style de carte que le reste de l'app (Règle "un seul
          style de carte partout", voir notes internes). --}}
-    <div class="mt-6 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+    {{-- Format de tableau commun (2026-10-29, « same format on all the tables
+         of the project ») — celui de « Tous les courriers » (voir le
+         commentaire de courrierList.blade.php) : en-têtes en petites capitales
+         soulignés navy, lignes sur UNE seule ligne (avatar réduit, poste à côté
+         du nom, texte trop long coupé et lisible en entier au survol), 16 px
+         en haut et en bas de chaque cellule, bouton d'actions centré. --}}
+    <div class="@container mt-6 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
         <table class="w-full text-sm">
-            <thead class="bg-brand-table-header text-left text-sm font-medium text-zinc-600 dark:bg-zinc-800">
+            <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
                 <tr>
-                    <th class="cursor-pointer select-none py-3 pl-4 pr-3" wire:click="trierPar('name')">
+                    <th class="cursor-pointer select-none whitespace-nowrap py-3 pl-4 pr-3 @min-[60rem]:pr-5" wire:click="trierPar('name')">
                         {{ __('Nom') }}
                         @if ($colonneTri === 'name')
                             <flux:icon :icon="$sensTri === 'asc' ? 'chevron-up' : 'chevron-down'" class="inline size-3.5" />
                         @endif
                     </th>
-                    <th class="cursor-pointer select-none py-3 pr-3" wire:click="trierPar('email')">
+                    <th class="cursor-pointer select-none whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5" wire:click="trierPar('email')">
                         {{ __('Email') }}
                         @if ($colonneTri === 'email')
                             <flux:icon :icon="$sensTri === 'asc' ? 'chevron-up' : 'chevron-down'" class="inline size-3.5" />
                         @endif
                     </th>
-                    <th class="py-3 pr-3">{{ __('Département') }}</th>
-                    <th class="py-3 pr-3">{{ __('Profil') }}</th>
-                    <th class="py-3 pr-3">{{ __('Confidentialité') }}</th>
-                    <th class="py-3 pr-3">{{ __('Statut') }}</th>
-                    <th class="cursor-pointer select-none py-3 pr-3" wire:click="trierPar('derniere_connexion_le')">
+                    <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Département') }}</th>
+                    <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Profil') }}</th>
+                    <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Confidentialité') }}</th>
+                    <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Statut') }}</th>
+                    <th class="w-px cursor-pointer select-none whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5" wire:click="trierPar('derniere_connexion_le')">
                         {{ __('Dernière connexion') }}
                         @if ($colonneTri === 'derniere_connexion_le')
                             <flux:icon :icon="$sensTri === 'asc' ? 'chevron-up' : 'chevron-down'" class="inline size-3.5" />
                         @endif
                     </th>
-                    <th class="py-3 pr-4 text-right">{{ __('Actions') }}</th>
+                    <th class="relative w-px py-3 pr-4"><span class="sr-only">{{ __('Actions') }}</span></th>
                 </tr>
             </thead>
-            <tbody class="divide-y divide-brand-border dark:divide-zinc-700">
+            <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
                 @forelse ($this->utilisateurs as $utilisateur)
+                    @php
+                        $nomLigne = $utilisateur->poste ? $utilisateur->name.' — '.$utilisateur->poste : $utilisateur->name;
+                        $departementLigne = $this->departementLabelDe($utilisateur) ?? '—';
+                    @endphp
                     <tr class="hover:bg-zinc-50 dark:hover:bg-zinc-800/60">
-                        <td class="py-3 pl-4 pr-3">
-                            <div class="flex items-center gap-2.5">
-                                <flux:avatar size="sm" circle :initials="$utilisateur->initials()" :src="$utilisateur->photoUrl()" />
-                                <div class="min-w-0">
-                                    <div class="truncate font-medium">{{ $utilisateur->name }}</div>
+                        <td class="w-[36%] min-w-36 py-4 pl-4 pr-3 @min-[60rem]:pr-5">
+                            <div class="flex w-0 min-w-full items-center gap-2">
+                                <flux:avatar size="xs" circle :initials="$utilisateur->initials()" :src="$utilisateur->photoUrl()" />
+                                <div class="min-w-0 truncate" title="{{ $nomLigne }}">
+                                    <span class="font-medium">{{ $utilisateur->name }}</span>
                                     @if ($utilisateur->poste)
-                                        <div class="truncate text-xs text-zinc-500">{{ $utilisateur->poste }}</div>
+                                        <span class="text-zinc-500">· {{ $utilisateur->poste }}</span>
                                     @endif
                                 </div>
                             </div>
                         </td>
-                        <td class="py-3 pr-3 text-zinc-500">{{ $utilisateur->email }}</td>
+                        <td class="w-[34%] min-w-28 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">
+                            <div class="w-0 min-w-full truncate" title="{{ $utilisateur->email }}">{{ $utilisateur->email }}</div>
+                        </td>
                         {{-- 2026-09-23, demande explicite de l'utilisateur :
                              le Département de l'organigramme — via un
                              rattachement de travail direct (organigramme,
@@ -122,39 +134,41 @@
                              UserList::departementLabelDe()) — "—" si ni
                              l'un ni l'autre n'existe (honnête, jamais une
                              valeur fabriquée). --}}
-                        <td class="py-3 pr-3 text-zinc-500">{{ $this->departementLabelDe($utilisateur) ?? '—' }}</td>
-                        <td class="py-3 pr-3">
+                        <td class="w-[30%] min-w-24 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">
+                            <div class="w-0 min-w-full truncate" title="{{ $departementLigne }}">{{ $departementLigne }}</div>
+                        </td>
+                        <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5">
                             @if ($utilisateur->profil)
-                                <span class="inline-flex items-center rounded-full bg-brand-accent-pale px-2 py-0.5 text-xs font-medium text-brand-accent">{{ $utilisateur->profil->nom }}</span>
+                                <span class="inline-flex items-center rounded-md bg-brand-accent-pale px-2 py-0.5 text-xs font-semibold text-brand-accent">{{ $utilisateur->profil->nom }}</span>
                             @else
                                 <span class="text-zinc-400">—</span>
                             @endif
                         </td>
-                        <td class="py-3 pr-3">
+                        <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5">
                             {{-- Niveau NUMÉRIQUE nu (2026-09-21, "numbers ... not
                                  confidential or whatever") — dégradé de couleur
                                  par plage plutôt qu'un cas par valeur exacte,
                                  pour rester correct sur les 5 niveaux. --}}
-                            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {{ match (true) {
+                            <span class="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold {{ match (true) {
                                 $utilisateur->niveau_confidentialite >= 4 => 'bg-brand-danger/10 text-brand-danger',
                                 $utilisateur->niveau_confidentialite >= 2 => 'bg-brand-warning/10 text-brand-warning',
                                 default => 'bg-zinc-100 text-zinc-600',
                             } }}">{{ __('Niveau :n', ['n' => $utilisateur->niveau_confidentialite]) }}</span>
                         </td>
-                        <td class="py-3 pr-3">
+                        <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5">
                             <span class="inline-flex items-center gap-1.5 text-xs font-medium {{ $utilisateur->actif ? 'text-brand-success' : 'text-zinc-500' }}">
                                 <span class="size-2 rounded-full {{ $utilisateur->actif ? 'bg-brand-success' : 'bg-zinc-400' }}"></span>
                                 {{ $utilisateur->actif ? __('Actif') : __('Désactivé') }}
                             </span>
                         </td>
-                        <td class="py-3 pr-3 text-zinc-500">
+                        <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">
                             {{ $utilisateur->derniere_connexion_le?->format('d/m/Y H:i') ?? __('Jamais connecté') }}
                         </td>
-                        <td class="py-3 pr-4 text-right">
+                        <td class="py-4 pr-4 text-center">
                             {{-- Compte protégé (administrateur) sans privileges.gerer : aucune action (2026-09-23). --}}
                             @if ($this->peutGererCompte($utilisateur))
                                 <flux:dropdown position="bottom" align="end">
-                                    <flux:button size="sm" variant="ghost" icon="ellipsis-horizontal" aria-label="{{ __('Actions') }}" />
+                                    <flux:button size="xs" variant="ghost" icon="ellipsis-horizontal" square aria-label="{{ __('Actions') }}" />
                                     <flux:menu>
                                         <flux:menu.item icon="pencil-square" wire:click="ouvrirEdition({{ $utilisateur->id }})">{{ __('Modifier') }}</flux:menu.item>
                                         @can('gerer', App\Models\Privilege::class)
@@ -214,10 +228,11 @@
                          remplace le sélecteur plat unique par la cascade
                          Site → Département → Service/Unité (Module
                          "Organisation" v2, même patron que
-                         RegistrationForm/ShowCourrier). Non obligatoire à
-                         AUCUN niveau (2026-09-22, demande explicite : une
-                         réceptionniste à l'accueil n'appartient à aucun
-                         département) — chaque sélecteur garde une option
+                         RegistrationForm/ShowCourrier). 2026-10-26 — une
+                         entité est OBLIGATOIRE (« chaque user doit être dans
+                         une direction, département, service ») : le niveau le
+                         plus fin choisi est retenu, jusqu'à la Direction
+                         Générale (Site) ; chaque sélecteur garde une option
                          "Aucun" réelle et cliquable, pas seulement un
                          placeholder (piège flux:select "freeze" déjà
                          rencontré). --}}
@@ -238,8 +253,8 @@
                             </flux:select>
                         @endif
                         @if ($this->ajoutDepartementsDisponibles->isNotEmpty())
-                            <flux:select wire:model.live="ajoutDepartementSelectionneId" :label="__('Département')">
-                                <flux:select.option value="">{{ __('— Aucun (ex. accueil) —') }}</flux:select.option>
+                            <flux:select wire:model.live="ajoutDepartementSelectionneId" :label="__('Département / Service')">
+                                <flux:select.option value="">{{ __('— Aucun (rattaché au niveau au-dessus) —') }}</flux:select.option>
                                 @foreach ($this->ajoutDepartementsDisponibles as $departement)
                                     <flux:select.option value="{{ $departement->id }}">{{ $departement->name }}</flux:select.option>
                                 @endforeach
@@ -254,6 +269,7 @@
                             </flux:select>
                         @endif
                     </div>
+                    <flux:error name="ajoutEntite" />
                     <flux:select wire:model.live="ajoutProfilId" :label="__('Profil')" required>
                         <flux:select.option value="">{{ __('Sélectionner un profil') }}</flux:select.option>
                         @foreach ($this->profils as $profil)
@@ -410,8 +426,8 @@
                             <div class="space-y-4">
                                 <flux:heading level="3">{{ __('Département et profil') }}</flux:heading>
                                 {{-- 2026-09-23, même cascade que la modale
-                                     "Ajouter" ci-dessus — non obligatoire à
-                                     aucun niveau, même raison. --}}
+                                     "Ajouter" ci-dessus — entité obligatoire
+                                     depuis le 2026-10-26, même raison. --}}
                                 <div class="grid gap-4 sm:grid-cols-4">
                                     <flux:select wire:model.live="editionSiteSelectionneId" :label="__('Site')" placeholder="{{ __('— Aucun (racine) —') }}">
                                         <flux:select.option value="">{{ __('— Aucun (racine) —') }}</flux:select.option>
@@ -429,8 +445,8 @@
                                         </flux:select>
                                     @endif
                                     @if ($this->editionDepartementsDisponibles->isNotEmpty())
-                                        <flux:select wire:model.live="editionDepartementSelectionneId" :label="__('Département')" placeholder="{{ __('— Aucun (ex. accueil) —') }}">
-                                            <flux:select.option value="">{{ __('— Aucun (ex. accueil) —') }}</flux:select.option>
+                                        <flux:select wire:model.live="editionDepartementSelectionneId" :label="__('Département / Service')" placeholder="{{ __('— Aucun (rattaché au niveau au-dessus) —') }}">
+                                            <flux:select.option value="">{{ __('— Aucun (rattaché au niveau au-dessus) —') }}</flux:select.option>
                                             @foreach ($this->editionDepartementsDisponibles as $departement)
                                                 <flux:select.option value="{{ $departement->id }}">{{ $departement->name }}</flux:select.option>
                                             @endforeach
@@ -445,6 +461,7 @@
                                         </flux:select>
                                     @endif
                                 </div>
+                                <flux:error name="editionEntite" />
                                 {{-- 2026-09-24 — service réel actuellement enregistré
                                      (utilisé pour l'affectation des courriers), affiché
                                      tel quel : un service pas encore représenté dans

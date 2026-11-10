@@ -75,6 +75,10 @@ return [
 
     'home' => '/dashboard',
 
+    'redirects' => [
+        'logout' => '/login',
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Fortify Routes Prefix / Subdomain
@@ -168,14 +172,11 @@ return [
         // libre créait un compte sans profil.
         Features::resetPasswords(),
         Features::emailVerification(),
-        Features::twoFactorAuthentication([
-            'confirm' => true,
-            'confirmPassword' => true,
-            // 'window' => 0
-        ]),
-        Features::passkeys([
-            'confirmPassword' => true,
-        ]),
+        // Features::twoFactorAuthentication() et Features::passkeys()
+        // désactivés (2026-10-26, demande de l'utilisateur : « remove the
+        // security ») : la page Sécurité qui permettait de les gérer est
+        // retirée ; aucun compte ne les utilisait (0 double authentification
+        // confirmée, 0 clé d'accès). Voir DECISIONS.md "Page Sécurité retirée".
     ],
 
 ];

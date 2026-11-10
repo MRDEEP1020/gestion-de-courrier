@@ -3,12 +3,14 @@
      service modal") — simple composant Blade (pas Livewire, donc aucune
      limite d'imbrication, Règle n°2) : chaque modale appelante passe
      seulement si le pont "Service réel lié" doit s'afficher. --}}
-@props(['avecServicePont' => false, 'creationAuto' => false, 'responsables', 'servicesReels'])
+@props(['avecServicePont' => false, 'creationAuto' => false, 'responsables', 'servicesReels', 'titreChef' => null])
 
 <flux:input wire:model="nomNoeud" :label="__('Nom')" required />
 <flux:input wire:model="codeNoeud" :label="__('Code')" placeholder="{{ __('ex. SIN-SANTE') }}" />
 
-<flux:select wire:model="responsableIdNoeud" :label="__('Responsable')" placeholder="{{ __('— Aucun pour l\'instant —') }}">
+{{-- 2026-10-26 — titre du chef selon le niveau (Directeur, Chef de
+     département, Responsable — voir OrganizationUnit::titreChef()). --}}
+<flux:select wire:model="responsableIdNoeud" :label="$titreChef ?? __('Responsable')" placeholder="{{ __('— Aucun pour l\'instant —') }}">
     <flux:select.option value="">{{ __('— Aucun pour l\'instant —') }}</flux:select.option>
     @foreach ($responsables as $u)
         <flux:select.option value="{{ $u->id }}">{{ $u->name }}</flux:select.option>
@@ -25,7 +27,7 @@
         </flux:select>
         <flux:text class="mt-1 text-xs text-zinc-500">
             @if ($creationAuto)
-                {{ __('Laissez "Créer automatiquement" pour que ce service reçoive des courriers (routage DGA, règles, recherche). Nom et responsable seront repris ; choisissez un service existant seulement pour le regrouper avec lui.') }}
+                {{ __('Laissez "Créer automatiquement" pour que ce service reçoive des courriers (transfert, règles, recherche). Nom et responsable seront repris ; choisissez un service existant seulement pour le regrouper avec lui.') }}
             @else
                 {{ __('Relie cette entité à un service réel — nécessaire pour qu\'elle soit sélectionnable lors d\'un transfert de courrier.') }}
             @endif

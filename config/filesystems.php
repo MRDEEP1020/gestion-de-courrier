@@ -47,8 +47,12 @@ return [
             'report' => false,
         ],
 
+        // 2026-11-09 — pilote « s3-chiffre » (voir App\Services\StockageChiffre
+        // et DECISIONS.md « Fichiers : chiffrement, aperçu sécurisé, aucun
+        // téléchargement ») : même S3/MinIO, contenu chiffré AES-256 avec la
+        // clé GEC_FICHIERS_CLE. Idem pour s3_backup ci-dessous.
         's3' => [
-            'driver' => 's3',
+            'driver' => 's3-chiffre',
             'key' => env('AWS_ACCESS_KEY_ID'),
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),
@@ -67,7 +71,7 @@ return [
         // vide en dev (aucune valeur de secours n'est configurée), auquel cas
         // la réplication est silencieusement ignorée (voir le Job).
         's3_backup' => [
-            'driver' => 's3',
+            'driver' => 's3-chiffre',
             'key' => env('AWS_BACKUP_ACCESS_KEY_ID'),
             'secret' => env('AWS_BACKUP_SECRET_ACCESS_KEY'),
             'region' => env('AWS_BACKUP_DEFAULT_REGION'),

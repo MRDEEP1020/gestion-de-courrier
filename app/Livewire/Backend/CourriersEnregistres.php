@@ -5,6 +5,7 @@ namespace App\Livewire\Backend;
 use App\Models\Courrier;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\On;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
@@ -18,7 +19,10 @@ use Livewire\WithPagination;
 // (même périmètre que CourrierList::resultats()), pas limitée à ses
 // PROPRES courriers comme MesCourriers. Vue seule — pas de transfert en
 // masse ici (ça reste le rôle de MesCourriers pour la réceptionniste sur
-// ses propres courriers).
+// ses propres courriers). 2026-10-23 (voir DECISIONS.md "Transfert direct
+// au service et acceptation") : 'en_cours_de_transfert' = en attente de
+// l'acceptation du service (pour un responsable : ce que son service doit
+// accepter), 'enregistre' = accepté, à affecter.
 #[Title('Courriers enregistrés')]
 class CourriersEnregistres extends Component
 {
@@ -29,7 +33,7 @@ class CourriersEnregistres extends Component
     // it") : TOUS les courriers entrants déjà sortis du transfert, quel que
     // soit leur statut actuel (affecté, en traitement, traité, archivé…) —
     // l'onglet "Transféré" seul les perdait dès leur affectation. Même
-    // périmètre (visiblePar) : pour une DGA, ce qu'elle a transféré.
+    // périmètre (visiblePar).
     public const ONGLETS = ['en_attente_de_transfert', 'en_cours_de_transfert', 'enregistre', 'suivi'];
 
     private const STATUTS_AVANT_TRANSFERT = ['en_attente_de_transfert', 'en_cours_de_transfert'];
@@ -83,6 +87,14 @@ class CourriersEnregistres extends Component
             ->when($suivi, fn ($q) => $q->latest('updated_at'), fn ($q) => $q->latest('date_mouvement'))
             ->paginate(10);
     }
+
+    // 2026-10-27 (« comme Outlook : quand quelqu'un envoie un courrier, il
+    // arrive directement sans que l'utilisateur rafraîchisse ») — une
+    // notification reçue en direct (NotificationBell::notificationRecue(),
+    // via Reverb) relance le rendu : la liste se recharge avec le nouveau
+    // courrier, sans recharger la page ni sonder le serveur (Règle n°2).
+    #[On('notifications-mises-a-jour')]
+    public function actualiserEnDirect(): void {}
 
     public function render()
     {

@@ -81,37 +81,58 @@
             @if ($this->regles->isEmpty())
                 <flux:text class="mt-3 text-zinc-500">{{ __('Aucune règle pour l\'instant — le classement automatique ne proposera rien tant qu\'il n\'y en a pas.') }}</flux:text>
             @else
-                <div class="mt-3 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                {{-- Format de tableau commun (2026-10-29, « same format on all the
+                     tables of the project ») — celui de « Tous les courriers »
+                     (voir le commentaire de courrierList.blade.php) : en-têtes en
+                     petites capitales soulignés navy, lignes sur
+                     UNE seule ligne (mots-clés à côté du nom, propositions
+                     jointes, détail complet au survol), 16 px en haut et en bas
+                     de chaque cellule ; les trois actions passent dans le menu
+                     « … » centré, comme sur les autres tableaux. --}}
+                <div class="@container mt-3 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                     <table class="w-full text-sm">
-                        <thead class="bg-brand-table-header text-left text-sm font-medium text-zinc-600 dark:bg-zinc-800">
+                        <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
                             <tr>
-                                <th class="py-3 pl-4 pr-3">{{ __('Priorité') }}</th>
-                                <th class="py-3 pr-3">{{ __('Règle') }}</th>
-                                <th class="py-3 pr-3">{{ __('Propose') }}</th>
-                                <th class="py-3 pr-4"></th>
+                                <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5 pl-4">{{ __('Priorité') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Règle') }}</th>
+                                <th class="py-3 {{ $peutGererRegles ? 'pr-3 @min-[60rem]:pr-5' : 'pr-4' }}">{{ __('Propose') }}</th>
+                                @if ($peutGererRegles)
+                                    <th class="relative w-px py-3 pr-4"><span class="sr-only">{{ __('Actions') }}</span></th>
+                                @endif
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
                             @foreach ($this->regles as $regle)
-                                <tr class="{{ $regle->actif ? '' : 'opacity-50' }}">
-                                    <td class="py-3 pl-4 pr-3 align-top">{{ $regle->priorite }}</td>
-                                    <td class="py-3 pr-3 align-top">
-                                        <div class="font-medium">{{ $regle->nom }}</div>
-                                        <div class="text-xs text-zinc-500">{{ implode(', ', $regle->mots_cles) }}</div>
-                                        <div class="text-xs text-zinc-400">{{ $regle->champs ? implode(' + ', $regle->champs) : __('tous les champs') }}</div>
+                                @php($champsRegle = $regle->champs ? implode(' + ', $regle->champs) : __('tous les champs'))
+                                @php($propositions = array_filter([
+                                    $regle->type_document_propose ? __('type').' : '.$regle->type_document_propose : null,
+                                    $regle->servicePropose ? __('service').' : '.$regle->servicePropose->nom : null,
+                                    $regle->tags ? __('tags').' : '.implode(', ', $regle->tags) : null,
+                                ]))
+                                <tr wire:key="regle-{{ $regle->id }}" class="hover:bg-zinc-50 dark:hover:bg-zinc-800 {{ $regle->actif ? '' : 'opacity-50' }}">
+                                    <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 pl-4">{{ $regle->priorite }}</td>
+                                    <td class="w-[55%] min-w-32 py-4 pr-3 @min-[60rem]:pr-5">
+                                        <div class="w-0 min-w-full truncate" title="{{ $regle->nom }} — {{ implode(', ', $regle->mots_cles) }} — {{ $champsRegle }}">
+                                            <span class="font-medium">{{ $regle->nom }}</span>
+                                            <span class="text-zinc-500">· {{ implode(', ', $regle->mots_cles) }}</span>
+                                        </div>
                                     </td>
-                                    <td class="py-3 pr-3 align-top">
-                                        @if ($regle->type_document_propose)<div>{{ __('type') }} : {{ $regle->type_document_propose }}</div>@endif
-                                        @if ($regle->servicePropose)<div>{{ __('service') }} : {{ $regle->servicePropose->nom }}</div>@endif
-                                        @if ($regle->tags)<div class="text-xs text-zinc-500">{{ __('tags') }} : {{ implode(', ', $regle->tags) }}</div>@endif
+                                    <td class="w-[45%] min-w-28 py-4 {{ $peutGererRegles ? 'pr-3 @min-[60rem]:pr-5' : 'pr-4' }}">
+                                        <div class="w-0 min-w-full truncate" title="{{ implode(' · ', $propositions) }}">{{ $propositions ? implode(' · ', $propositions) : __('—') }}</div>
                                     </td>
-                                    <td class="py-3 pr-4 align-top whitespace-nowrap">
-                                        @if ($peutGererRegles)
-                                            <flux:button size="xs" variant="ghost" wire:click="modifier({{ $regle->id }})">{{ __('Modifier') }}</flux:button>
-                                            <flux:button size="xs" variant="ghost" wire:click="basculer({{ $regle->id }})">{{ $regle->actif ? __('Désactiver') : __('Activer') }}</flux:button>
-                                            <flux:button size="xs" variant="outline" class="border-brand-danger-border! text-brand-danger! hover:bg-brand-danger-hover-bg!" wire:click="supprimer({{ $regle->id }})" wire:confirm="{{ __('Supprimer cette règle ?') }}">{{ __('Supprimer') }}</flux:button>
-                                        @endif
-                                    </td>
+                                    @if ($peutGererRegles)
+                                        <td class="py-4 pr-4 text-center">
+                                            <flux:dropdown position="bottom" align="end">
+                                                <flux:button variant="ghost" size="xs" icon="ellipsis-horizontal" square :aria-label="__('Actions')" />
+                                                <flux:menu>
+                                                    <flux:menu.item icon="pencil-square" wire:click="modifier({{ $regle->id }})">{{ __('Modifier') }}</flux:menu.item>
+                                                    <flux:menu.item :icon="$regle->actif ? 'pause-circle' : 'play-circle'" wire:click="basculer({{ $regle->id }})">{{ $regle->actif ? __('Désactiver') : __('Activer') }}</flux:menu.item>
+                                                    <flux:menu.separator />
+                                                    <flux:menu.item icon="trash" variant="danger" wire:click="supprimer({{ $regle->id }})" wire:confirm="{{ __('Supprimer cette règle ?') }}">{{ __('Supprimer') }}</flux:menu.item>
+                                                </flux:menu>
+                                            </flux:dropdown>
+                                        </td>
+                                    @endif
                                 </tr>
                             @endforeach
                         </tbody>

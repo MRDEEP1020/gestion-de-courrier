@@ -67,6 +67,10 @@ return [
 
     'timezone' => env('APP_TIMEZONE', 'Africa/Douala'),
 
+    // Ville imprimée sur les documents (« Douala, le … ») — décharge de remise
+    // de l'original (2026-10-27).
+    'ville' => env('APP_VILLE', 'Douala'),
+
     /*
     |--------------------------------------------------------------------------
     | Application Locale Configuration

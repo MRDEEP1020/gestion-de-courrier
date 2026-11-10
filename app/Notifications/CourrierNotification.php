@@ -2,9 +2,11 @@
 
 namespace App\Notifications;
 
+use App\Concerns\NotificationTempsReel;
 use App\Models\Courrier;
 use App\Models\CourrierHistorique;
 use App\Models\User;
+use App\Services\NotificationPreferenceService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -23,15 +25,20 @@ use Illuminate\Notifications\Notification;
 // Livewire), jamais d'envoi de mail dans le cycle requête/réponse.
 class CourrierNotification extends Notification implements ShouldQueue
 {
-    use Queueable;
+    use NotificationTempsReel, Queueable;
 
     // Libellés dirigés vers le DESTINATAIRE ("vous"), distincts du style
     // journal (3e personne) de CourrierHistorique::AFFICHAGE — un seul
     // endroit par action, partagé entre toDatabase()/toMail().
     private const LIBELLES = [
         'affectation' => 'Un courrier vous a été affecté : :ref',
-        'transfert' => 'Un courrier vous a été transféré : :ref',
-        'service_valide_dga' => 'Un courrier a rejoint la file de votre service : :ref',
+        // 2026-10-23 (voir DECISIONS.md "Transfert direct au service et
+        // acceptation") — plus de DGA : le service reçoit le transfert, l'agent
+        // est prévenu de l'acceptation ou du refus.
+        'transfert' => 'Un courrier a été transféré à votre service — à accepter : :ref',
+        'transfert_accepte' => 'Votre courrier a été accepté par le service — remettez l\'original papier : :ref',
+        'transfert_refuse' => 'Votre courrier a été refusé par le service — à réorienter : :ref',
+        'transmission' => 'Un courrier a été transmis à votre service — à affecter : :ref',
         'reaffectation_nouveau' => 'Un courrier vous a été réaffecté : :ref',
         'reaffectation_ancien' => 'Le courrier :ref ne vous est plus affecté',
         'soumis_validation' => 'Une réponse attend votre validation : :ref',
@@ -43,6 +50,8 @@ class CourrierNotification extends Notification implements ShouldQueue
         'traite_tresorerie' => 'La trésorerie a traité le courrier : :ref',
         'mise_en_attente' => 'Le courrier :ref est mis en attente d\'information',
         'reprise' => 'Le traitement du courrier :ref a repris',
+        // 2026-10-30 — relance manuelle (WorkflowService::relancer()).
+        'relance' => 'Relance : le courrier :ref attend votre traitement',
         'rejet' => 'Le courrier :ref a été rejeté',
         'decharge_emise' => 'Un original vous a été confié (décharge) : :ref',
         'decharge_rendue' => 'L\'original du courrier :ref a été rendu',
@@ -68,7 +77,7 @@ class CourrierNotification extends Notification implements ShouldQueue
 
     public function via(object $notifiable): array
     {
-        return ['mail', 'database'];
+        return app(NotificationPreferenceService::class)->canaux($notifiable, 'courriers');
     }
 
     // Action réelle pour l'icône/couleur (CourrierHistorique::AFFICHAGE) —
@@ -101,6 +110,11 @@ class CourrierNotification extends Notification implements ShouldQueue
             'courrier_id' => $courrier->id,
             'numero_reference' => $courrier->numero_reference,
             'envoye_par' => $this->envoyePar?->name,
+            // 2026-10-30 (« where does the message go », capture d'une relance)
+            // — message de relance, motif de rejet/renvoi/attente… : jusque-là
+            // seulement dans l'e-mail et l'historique, absent de l'application.
+            // Même portée que l'e-mail (envoyé à la personne visée par l'auteur).
+            'commentaire' => $this->commentaire,
         ];
     }
 

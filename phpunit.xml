@@ -34,6 +34,17 @@
              tâche de fond. ReplicateFichierJobTest active `s3_backup` explicitement
              pour vérifier le comportement de copie. -->
         <env name="AWS_BACKUP_BUCKET" value=""/>
+        <!-- Conformité de l'archivage (2026-10-30) : scellement des empreintes et
+             copie PDF/A automatiques désactivés par défaut en test (même raison que
+             ci-dessus) ; IntegriteArchivageTest les réactive explicitement. -->
+        <env name="ARCHIVAGE_SCELLEMENT_AUTO" value="false"/>
+        <env name="ARCHIVAGE_PDFA_AUTO" value="false"/>
+        <env name="ARCHIVAGE_APERCU_AUTO" value="false"/>
+        <!-- Chiffrement des fichiers (2026-11-09) : clé FIXE réservée aux tests
+             (« gec-cle-de-test-uniquement-32oct »), jamais celle du .env. -->
+        <env name="GEC_FICHIERS_CLE" value="base64:Z2VjLWNsZS1kZS10ZXN0LXVuaXF1ZW1lbnQtMzJvY3Q="/>
+        <env name="GEC_FICHIERS_CLE_ID" value="1"/>
+        <env name="GEC_FICHIERS_CLES_PRECEDENTES" value=""/>
         <env name="SESSION_DRIVER" value="array"/>
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>

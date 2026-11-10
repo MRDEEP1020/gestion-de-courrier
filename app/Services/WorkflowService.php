@@ -3,10 +3,13 @@
 namespace App\Services;
 
 use App\Events\CourrierStatutChange;
+use App\Jobs\ConvertirPdfaJob;
 use App\Models\Affectation;
 use App\Models\Courrier;
 use App\Models\CourrierHistorique;
 use App\Models\Decharge;
+use App\Models\Service;
+use App\Models\TransfertService;
 use App\Models\User;
 use App\Notifications\CourrierNotification;
 use Illuminate\Support\Collection;
@@ -30,29 +33,19 @@ class WorkflowService
     // dit "un courrier clôturé est automatiquement transféré vers l'archivage"
     // — voir archiverAutomatiquement() plus bas, appelée uniquement par
     // ArchiverCourriersTraitesJob (2026-09-21, "Dossiers & Archives").
-    // 2026-09-08 — ajout d'une étape de validation DGA/ADJ : un courrier
-    // entrant NON-sinistre passe par cette validation (confirme/change le
-    // service proposé par Module 3) avant de rejoindre la file du
-    // responsable de service — un courrier sinistre confirmé par la
-    // réceptionniste saute directement cette étape (reste 'enregistre' dès
-    // la création, voir RegistrationForm::enregistrer()). Toujours une seule
-    // machine à états générique (voir commentaire ci-dessus) : cette étape
-    // n'est PAS un circuit différent par type de courrier, seulement une
-    // transition initiale conditionnelle décidée une fois, à l'enregistrement.
-    //
-    // 2026-09-15 (synchronisation SRS-GEC.pdf, voir DECISIONS.md) : cette
-    // étape unique ('en_attente_validation_dga') est scindée en 2
-    // sous-statuts explicites, comme demandé par le client — la
-    // réceptionniste doit cliquer "Transférer" (transferer() ci-dessous)
-    // pour faire passer le courrier de "pas encore transféré" à "en attente
-    // du DGA", au lieu d'un envoi automatique et silencieux à
-    // l'enregistrement. Le 3e sous-statut du document ("Transféré") est le
-    // 'enregistre' déjà existant — pas de nouvelle valeur pour lui (décision
-    // du 2026-09-08 de ne jamais renommer une valeur d'ENUM déjà en place).
+    // 2026-10-23 (voir DECISIONS.md "Transfert direct au service et
+    // acceptation") — plus de validation DGA/ADJ : l'accueil transfère un
+    // courrier entrant directement au service concerné, qui l'ACCEPTE ou le
+    // REFUSE. Les deux statuts existants changent de sens, sans nouvelle
+    // valeur d'ENUM (décision du 2026-09-08 de ne jamais renommer une valeur
+    // déjà en place) : 'en_attente_de_transfert' = pas encore transféré (ou
+    // refusé, à réorienter), 'en_cours_de_transfert' = transféré, en attente
+    // d'acceptation par le service, 'enregistre' = accepté, à affecter. Un
+    // courrier sortant démarre toujours directement à 'enregistre'.
     private const TRANSITIONS = [
         'enregistre' => ['affecte', 'rejete'],
         'en_attente_de_transfert' => ['en_cours_de_transfert', 'rejete'],
-        'en_cours_de_transfert' => ['enregistre', 'rejete'],
+        'en_cours_de_transfert' => ['enregistre', 'en_attente_de_transfert', 'rejete'],
         'affecte' => ['en_traitement', 'en_attente_information', 'rejete'],
         'en_traitement' => ['en_validation', 'en_attente_information', 'rejete'],
         'en_validation' => ['traite', 'en_traitement', 'en_attente_information', 'rejete', 'en_attente_signature_dg'],
@@ -73,6 +66,10 @@ class WorkflowService
         // (voir archiverAutomatiquement() plus bas), pas par un bouton.
         'traite' => ['archive'],
     ];
+
+    // Statuts où une personne affectée a la main — relance manuelle possible
+    // (2026-10-30, voir relancer()).
+    public const STATUTS_RELANCE = ['affecte', 'en_traitement', 'en_attente_information'];
 
     // 2026-09-21 — 'traite' a désormais une transition sortante (vers
     // 'archive', voir archiverAutomatiquement() plus bas) mais n'est PAS un
@@ -133,161 +130,314 @@ class WorkflowService
         $this->notifier($collaborateur, $courrier, 'affectation', $auteur, $commentaire);
     }
 
-    // Module 1/4 — la réceptionniste clique "Transférer" pour envoyer
-    // explicitement le courrier au DGA/ADJ DGA (SRS-GEC.pdf, 2026-09-15) —
-    // jusque-là ce transfert était automatique et silencieux à
-    // l'enregistrement (voir DECISIONS.md) ; il faut désormais une action
-    // réceptionniste distincte, tracée séparément de la création.
-    // 2026-09-15 (mise à jour) — elle choisit désormais QUI parmi ses
-    // destinataires autorisés (DGA, ADJ DGA, ou un autre superviseur — voir
-    // DECISIONS.md "Destinataires de transfert") : $destinataire n'est PAS
-    // revérifié ici (WorkflowService reste la couche transition/historique,
-    // pas la couche autorisation) — c'est à l'appelant (ShowCourrier/
-    // MesCourriers) de vérifier que $destinataire fait bien partie de
-    // $auteur->destinatairesTransfert avant d'appeler cette méthode (Règle
-    // n°6, jamais fait confiance à un ID posté).
-    public function transferer(Courrier $courrier, User $destinataire, User $auteur): void
+    // Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au service
+    // et acceptation") — l'accueil transfère un courrier entrant directement
+    // au service concerné (plus de DGA). Le service est posé dès maintenant
+    // (son responsable doit pouvoir voir l'enveloppe du courrier pour
+    // décider), mais le CONTENU lui reste masqué jusqu'à l'acceptation (voir
+    // CourrierPolicy::voirContenu()) et les fichiers ne quittent pas
+    // "_en_attente" avant elle (voir accepterTransfert()). Le service doit
+    // avoir un responsable : c'est lui qui accepte (Module 6 — un courrier a
+    // toujours un responsable identifié). L'appelant a déjà vérifié le droit
+    // de transférer (CourrierPolicy::transferer()) : WorkflowService reste la
+    // couche transition/historique, pas la couche autorisation.
+    public function transfererAuService(Courrier $courrier, Service $service, User $auteur): TransfertService
     {
         $this->verifierTransition($courrier, 'en_cours_de_transfert');
 
-        DB::transaction(function () use ($courrier, $destinataire, $auteur) {
+        if ($service->responsable_id === null) {
+            throw new RuntimeException("Transfert impossible : le service « {$service->nom} » n'a pas de responsable.");
+        }
+
+        $transfert = DB::transaction(function () use ($courrier, $service, $auteur) {
             $courrier->update([
                 'statut' => 'en_cours_de_transfert',
-                'destinataire_transfert_id' => $destinataire->id,
+                'service_id' => $service->id,
+            ]);
+
+            $transfert = TransfertService::create([
+                'courrier_id' => $courrier->id,
+                'service_id' => $service->id,
+                'transfere_par_id' => $auteur->id,
             ]);
 
             CourrierHistorique::create([
                 'courrier_id' => $courrier->id,
                 'auteur_id' => $auteur->id,
                 'action' => 'transfert',
-                'commentaire' => "Transféré à {$destinataire->name}",
+                'commentaire' => "Transféré au service {$service->nom}",
             ]);
+
+            return $transfert;
         });
 
         $this->diffuserChangementStatut($courrier->id, 'en_cours_de_transfert');
-        $this->notifier($destinataire, $courrier, 'transfert', $auteur);
+        $this->notifier($service->responsable, $courrier, 'transfert', $auteur);
+
+        return $transfert;
     }
 
-    // Module 1/4 — demande explicite de l'utilisateur (2026-09-08, précisée le
-    // 2026-09-15 par SRS-GEC.pdf, voir DECISIONS.md) : la DGA/ADJ choisit le
-    // service pour un courrier entrant non-sinistre — le champ n'est plus
-    // saisi par l'agent du tout, `service_id` vaut donc systématiquement null
-    // avant cet appel (sauf sinistre auto-routé, qui ne passe jamais par
-    // cette méthode). Correspond à l'étape "Transféré" du document (le
-    // destinataire clique "Valider/Accepter le transfert") — devenue
-    // 'enregistre' (statut déjà existant, pas de renommage). Suit le même
-    // schéma qu'affecter() ci-dessus (transaction, historique immuable)
-    // plutôt que réutiliser transitionnerSimple() : contrairement aux autres
-    // transitions, celle-ci modifie aussi service_id, pas seulement statut.
-    // 2026-09-21 — demande explicite de l'utilisateur : le niveau de
-    // confidentialité RÉELLEMENT opposable (comparé à User::niveau_confidentialite,
-    // voir CourrierPolicy::niveauSuffisant()) n'est plus figé au choix de la
-    // réceptionniste à l'enregistrement — la DGA le confirme ou le
-    // corrige ici, en même temps qu'elle confirme le service. Le choix de
-    // la réceptionniste reste la valeur de DÉPART (pré-remplie dans le
-    // formulaire, voir ShowCourrier::mount()) — indispensable pour un
-    // courrier réellement confidentiel dès l'enveloppe, jamais ouvert par
-    // la réceptionniste (mode confidentiel de RegistrationForm, voir
-    // DECISIONS.md "fusion explicitement demandée") : elle DOIT pouvoir
-    // le marquer confidentiel dès l'enregistrement, sans attendre la DGA.
-    public function validerService(Courrier $courrier, int $serviceId, int $confidentialite, User $auteur): void
+    // Le responsable du service destinataire accepte : numéro de décharge
+    // (preuve exigée avant la remise de l'original papier), fichiers
+    // déplacés vers le dossier du service (Règle n°4), agent prévenu qu'il
+    // peut remettre l'original. Ligne de transfert relue et verrouillée dans
+    // la transaction : un double clic ou un second onglet ne décide jamais
+    // deux fois (même principe que finaliserBrouillon()).
+    public function accepterTransfert(Courrier $courrier, User $auteur): TransfertService
     {
         $this->verifierTransition($courrier, 'enregistre');
 
-        // Comparé à la PROPOSITION de classement (Module 3), pas à
-        // service_id (toujours null à ce stade) — c'est la seule référence
-        // pertinente pour distinguer "la DGA a suivi la suggestion" de "la
-        // DGA a choisi autre chose".
-        $suitLaProposition = $serviceId === $courrier->service_propose_id;
-        $confidentialiteModifiee = $confidentialite !== $courrier->confidentialite;
+        $transfert = DB::transaction(function () use ($courrier, $auteur) {
+            $transfert = $this->transfertEnAttenteVerrouille($courrier);
 
-        DB::transaction(function () use ($courrier, $serviceId, $confidentialite, $auteur, $suitLaProposition, $confidentialiteModifiee) {
-            $courrier->update([
-                'statut' => 'enregistre',
-                'service_id' => $serviceId,
-                'confidentialite' => $confidentialite,
+            $courrier->update(['statut' => 'enregistre']);
+
+            $transfert->update([
+                'statut' => TransfertService::ACCEPTE,
+                'decide_par_id' => $auteur->id,
+                'decide_le' => now(),
+                'numero_decharge' => $transfert->genererNumeroDecharge(),
             ]);
 
             CourrierHistorique::create([
                 'courrier_id' => $courrier->id,
                 'auteur_id' => $auteur->id,
-                'action' => 'service_valide_dga',
-                'commentaire' => $suitLaProposition ? 'Service confirmé par la DGA' : 'Service choisi par la DGA (différent de la proposition)',
+                'action' => 'transfert_accepte',
+                'commentaire' => "Accepté par {$auteur->name} — décharge {$transfert->numero_decharge}",
             ]);
 
-            // Traçabilité distincte (Règle n°5) — seulement si la DGA a
-            // réellement changé le niveau proposé par la réceptionniste,
-            // jamais une ligne "confirmé" bruyante pour rien.
-            if ($confidentialiteModifiee) {
-                CourrierHistorique::create([
-                    'courrier_id' => $courrier->id,
-                    'auteur_id' => $auteur->id,
-                    'action' => 'confidentialite_modifiee_dga',
-                    'commentaire' => "Niveau de confidentialité changé en « {$confidentialite} » par la DGA",
-                ]);
-            }
+            return $transfert;
         });
 
         $this->diffuserChangementStatut($courrier->id, 'enregistre');
 
-        // Fichiers rangés sous le segment provisoire "_en_attente" (voir
-        // Courrier::segmentClassement()) tant que le service était inconnu —
-        // déplacés maintenant vers le vrai dossier service. Hors transaction
-        // (opération de stockage S3, non transactionnelle), non bloquante :
+        // Hors transaction (stockage S3, non transactionnel) et non bloquant :
         // un échec laisse le fichier accessible à son ancien chemin plutôt
-        // que de faire échouer la validation du service elle-même.
+        // que d'annuler l'acceptation elle-même.
         $courrierFrais = $courrier->fresh(['service', 'piecesJointes']);
         $this->deplacerFichiersVersService($courrierFrais);
-        $this->notifier($courrierFrais->service?->responsable, $courrierFrais, 'service_valide_dga', $auteur);
+        $this->notifier($transfert->transferePar, $courrierFrais, 'transfert_accepte', $auteur);
+
+        return $transfert;
     }
 
-    // 2026-10-12, bug réel (retour utilisateur, "no notification of the new
-    // courrier been transfere to him why") — RegistrationForm résout parfois
-    // service_id DIRECTEMENT à l'enregistrement, en sautant délibérément la
-    // validation DGA (sinistre auto-routé, ou agent avec le privilège
-    // courriers.envoyer_direct_service — voir ses commentaires détaillés) :
-    // ces deux chemins ne passent jamais par validerService() ci-dessus, donc
-    // le responsable du service n'était jamais notifié qu'un courrier venait
-    // de rejoindre sa file — même MÉTIER que service_valide_dga (un courrier
-    // rejoint la file d'un service), juste un déclencheur différent (l'agent,
-    // pas le DGA) ; réutilise donc la même action/le même libellé de
-    // notification plutôt que d'en inventer un nouveau. notifier() est privé
-    // (Règle n°6, jamais exposé tel quel) — ce point d'entrée public reste
-    // délibérément étroit (un seul usage : "ce courrier vient de rejoindre la
-    // file de CE service, préviens son responsable").
-    public function notifierArriveeDansService(Courrier $courrier, User $auteur): void
+    // Le service refuse (motif obligatoire) : le courrier retourne à
+    // l'accueil, sans service, pour être réorienté. Ses fichiers n'ont
+    // jamais quitté "_en_attente" (déplacés seulement à l'acceptation) :
+    // rien à défaire sur le stockage.
+    public function refuserTransfert(Courrier $courrier, User $auteur, string $motif): TransfertService
     {
-        $this->notifier($courrier->service?->responsable, $courrier, 'service_valide_dga', $auteur);
+        $this->verifierTransition($courrier, 'en_attente_de_transfert');
+
+        $transfert = DB::transaction(function () use ($courrier, $auteur, $motif) {
+            $transfert = $this->transfertEnAttenteVerrouille($courrier);
+
+            $courrier->update([
+                'statut' => 'en_attente_de_transfert',
+                'service_id' => null,
+            ]);
+
+            $transfert->update([
+                'statut' => TransfertService::REFUSE,
+                'decide_par_id' => $auteur->id,
+                'decide_le' => now(),
+                'motif_refus' => $motif,
+            ]);
+
+            CourrierHistorique::create([
+                'courrier_id' => $courrier->id,
+                'auteur_id' => $auteur->id,
+                'action' => 'transfert_refuse',
+                'commentaire' => "Refusé par {$auteur->name} (service {$transfert->service?->nom}) — motif : {$motif}",
+            ]);
+
+            return $transfert;
+        });
+
+        $this->diffuserChangementStatut($courrier->id, 'en_attente_de_transfert');
+        $this->notifier($transfert->transferePar, $courrier, 'transfert_refuse', $auteur, $motif);
+
+        return $transfert;
     }
 
+    // L'accueil a remis l'original papier au service qui l'a accepté. Pas
+    // une transition de circuit (le courrier peut déjà être affecté ou en
+    // traitement) : seulement la ligne de transfert et une trace d'historique.
+    // 2026-10-29 — la remise débloque la signature du service (ordre remise →
+    // signature → affectation) : sa fiche ouverte ailleurs se rafraîchit.
+    public function marquerOriginalRemis(Courrier $courrier, User $auteur): TransfertService
+    {
+        $transfert = DB::transaction(function () use ($courrier, $auteur) {
+            $transfert = TransfertService::where('courrier_id', $courrier->id)
+                ->where('statut', TransfertService::ACCEPTE)
+                ->whereNull('original_remis_le')
+                ->latest('id')
+                ->lockForUpdate()
+                ->first();
+
+            if ($transfert === null) {
+                throw new RuntimeException('Aucun transfert accepté en attente de remise de l\'original.');
+            }
+
+            $transfert->update([
+                'original_remis_le' => now(),
+                'original_remis_par_id' => $auteur->id,
+            ]);
+
+            CourrierHistorique::create([
+                'courrier_id' => $courrier->id,
+                'auteur_id' => $auteur->id,
+                'action' => 'original_remis',
+                'commentaire' => "Original papier remis au service {$transfert->service?->nom} (décharge {$transfert->numero_decharge})",
+            ]);
+
+            return $transfert;
+        });
+
+        $this->diffuserChangementStatut($courrier->id, $courrier->statut);
+
+        return $transfert;
+    }
+
+    // 2026-10-28 (« mettre le nom comme signature au cas où on ne veut pas
+    // imprimer ») — le service signe électroniquement la réception de
+    // l'original : son nom et l'heure figurent dans le cadre « Reçu par » de
+    // la décharge. Signature unique, tracée dans l'historique (Règle n°5).
+    // L'ordre remise → signature (2026-10-29) est vérifié par l'appelant
+    // (CourrierPolicy::signerReceptionOriginal()).
+    public function signerReceptionOriginal(Courrier $courrier, User $auteur): TransfertService
+    {
+        $transfert = DB::transaction(function () use ($courrier, $auteur) {
+            $transfert = TransfertService::where('courrier_id', $courrier->id)
+                ->where('statut', TransfertService::ACCEPTE)
+                ->whereNull('reception_signee_le')
+                ->latest('id')
+                ->lockForUpdate()
+                ->first();
+
+            if ($transfert === null) {
+                throw new RuntimeException('Aucune décharge en attente de la signature de réception.');
+            }
+
+            $transfert->update([
+                'reception_signee_le' => now(),
+                'reception_signee_par_id' => $auteur->id,
+            ]);
+
+            CourrierHistorique::create([
+                'courrier_id' => $courrier->id,
+                'auteur_id' => $auteur->id,
+                'action' => 'reception_original_signee',
+                'commentaire' => "Réception de l'original signée électroniquement (décharge {$transfert->numero_decharge})",
+            ]);
+
+            return $transfert;
+        });
+
+        // La signature débloque l'affectation : fiches ouvertes rafraîchies.
+        $this->diffuserChangementStatut($courrier->id, $courrier->statut);
+
+        return $transfert;
+    }
+
+    // 2026-10-23 (voir DECISIONS.md "Transmission descendante par la
+    // Direction") — le responsable d'une entité (ex. une Direction) transmet
+    // un courrier accepté à une unité placée sous elle : le service change,
+    // le courrier reste "À affecter" chez le chef de cette unité. Pas de
+    // nouvelle décharge ni d'acceptation (le papier est déjà dans l'entité).
+    // L'appelant a vérifié que $cible est bien une unité rattachée et le
+    // droit de transmettre (Règle n°6) : WorkflowService reste la couche
+    // transition/historique. Fichiers déplacés vers le dossier du nouveau
+    // service (Règle n°4).
+    public function transmettreAUnite(Courrier $courrier, Service $cible, User $auteur): void
+    {
+        if ($courrier->statut !== 'enregistre') {
+            throw new RuntimeException("Transmission impossible depuis le statut « {$courrier->statut} ».");
+        }
+
+        if ($cible->id === $courrier->service_id || $cible->responsable_id === null) {
+            throw new RuntimeException("Transmission impossible vers le service « {$cible->nom} ».");
+        }
+
+        $origine = $courrier->service?->nom;
+
+        DB::transaction(function () use ($courrier, $cible, $auteur, $origine) {
+            $courrier->update(['service_id' => $cible->id]);
+
+            CourrierHistorique::create([
+                'courrier_id' => $courrier->id,
+                'auteur_id' => $auteur->id,
+                'action' => 'transmission',
+                'commentaire' => trim(($origine ? "Transmis par {$origine} " : 'Transmis ')."au service {$cible->nom}"),
+            ]);
+        });
+
+        // Statut inchangé, mais la fiche ouverte ailleurs doit se rafraîchir
+        // (nouveau responsable, nouveaux boutons).
+        $this->diffuserChangementStatut($courrier->id, 'enregistre');
+
+        $courrierFrais = $courrier->fresh(['service', 'piecesJointes']);
+        $this->deplacerFichiersVersService($courrierFrais);
+        $this->notifier($cible->responsable, $courrierFrais, 'transmission', $auteur);
+    }
+
+    private function transfertEnAttenteVerrouille(Courrier $courrier): TransfertService
+    {
+        $transfert = TransfertService::where('courrier_id', $courrier->id)
+            ->where('statut', TransfertService::EN_ATTENTE)
+            ->latest('id')
+            ->lockForUpdate()
+            ->first();
+
+        if ($transfert === null) {
+            throw new RuntimeException("Aucun transfert en attente de décision pour le courrier {$courrier->numero_reference}.");
+        }
+
+        return $transfert;
+    }
+
+    // Fichiers rangés sous un autre segment que celui du service actuel
+    // (provisoire "_en_attente", ou le dossier d'un service qui a refusé
+    // après une re-numérisation) — déplacés vers le vrai dossier du service
+    // (Règle n°4 : courriers/{annee}/{service}/...), document principal et
+    // pièces jointes.
     private function deplacerFichiersVersService(Courrier $courrier): void
     {
-        $ancienSegment = Courrier::SEGMENT_SERVICE_EN_ATTENTE;
-        $nouveauSegment = $courrier->segmentClassement();
+        $segment = $courrier->segmentClassement();
 
-        if ($nouveauSegment === $ancienSegment) {
+        if ($segment === Courrier::SEGMENT_SERVICE_EN_ATTENTE) {
             return;
         }
 
-        if ($courrier->fichier_path !== null && str_contains($courrier->fichier_path, "/{$ancienSegment}/")) {
-            $nouveauChemin = str_replace("/{$ancienSegment}/", "/{$nouveauSegment}/", $courrier->fichier_path);
-
+        if ($courrier->fichier_path !== null && ($nouveauChemin = self::cheminSousSegment($courrier->fichier_path, $segment)) !== null) {
             if ($this->deplacerFichier($courrier->fichier_path, $nouveauChemin)) {
                 $courrier->update(['fichier_path' => $nouveauChemin]);
             }
         }
 
         foreach ($courrier->piecesJointes as $pieceJointe) {
-            if (! str_contains($pieceJointe->fichier_path, "/{$ancienSegment}/")) {
-                continue;
-            }
+            $nouveauChemin = self::cheminSousSegment($pieceJointe->fichier_path, $segment);
 
-            $nouveauChemin = str_replace("/{$ancienSegment}/", "/{$nouveauSegment}/", $pieceJointe->fichier_path);
-
-            if ($this->deplacerFichier($pieceJointe->fichier_path, $nouveauChemin)) {
+            if ($nouveauChemin !== null && $this->deplacerFichier($pieceJointe->fichier_path, $nouveauChemin)) {
                 $pieceJointe->update(['fichier_path' => $nouveauChemin]);
             }
         }
+    }
+
+    // courriers/{annee}/{segment}/{reste} → même chemin sous $segment. Null
+    // si le fichier y est déjà, ou s'il ne suit pas ce schéma de nommage
+    // (jamais un chemin inventé pour un fichier rangé ailleurs).
+    private static function cheminSousSegment(string $chemin, string $segment): ?string
+    {
+        $parties = explode('/', $chemin, 4);
+
+        if (count($parties) !== 4 || $parties[0] !== 'courriers' || $parties[2] === $segment) {
+            return null;
+        }
+
+        $parties[2] = $segment;
+
+        return implode('/', $parties);
     }
 
     // Retourne true seulement si le déplacement a réellement eu lieu —
@@ -434,6 +584,35 @@ class WorkflowService
         $this->transitionnerSimple($courrier, 'en_traitement', $auteur, 'reprise', null, $this->autrePartie($courrier, $auteur));
     }
 
+    // Module 7 (2026-10-30, « courrier en traitement qui part vers le retard
+    // doit faire des relances… on doit pouvoir les relancer manuellement
+    // aussi ») — relance MANUELLE de la personne affectée, en plus des
+    // relances automatiques de SendMailAlertJob. Pas une transition : le
+    // statut ne change pas, seule une trace (Règle n°5) et une notification
+    // en file d'attente (Règle n°1) sont créées.
+    public function relancer(Courrier $courrier, User $auteur, ?string $message = null): User
+    {
+        $courrier->refresh();
+        $affecte = $courrier->affectationCourante?->collaborateur;
+
+        if (! in_array($courrier->statut, self::STATUTS_RELANCE, true) || $affecte === null) {
+            throw new RuntimeException("Relance impossible : courrier {$courrier->numero_reference} au statut « {$courrier->statut} » ou sans personne affectée.");
+        }
+
+        CourrierHistorique::create([
+            'courrier_id' => $courrier->id,
+            'auteur_id' => $auteur->id,
+            'action' => 'relance',
+            'commentaire' => $message !== null && $message !== ''
+                ? "Relance envoyée à {$affecte->name} — {$message}"
+                : "Relance envoyée à {$affecte->name}",
+        ]);
+
+        $this->notifier($affecte, $courrier, 'relance', $auteur, $message ?: null);
+
+        return $affecte;
+    }
+
     // Statut "Rejeté" du spec Module 4 — dérogation explicite tracée (motif
     // obligatoire) plutôt qu'un simple abandon silencieux.
     public function rejeter(Courrier $courrier, User $auteur, string $motif): void
@@ -576,7 +755,16 @@ class WorkflowService
             default => $destinataires,
         };
 
-        $destinataires = $destinataires->filter()->unique('id')->values();
+        // 2026-10-30 (« if it is the responsible doing the traitement some of
+        // the workflow process should not send notif ») — le filtre promis
+        // ci-dessus n'était pas réellement appliqué : le responsable qui
+        // traite lui-même recevait « Un courrier vous a été affecté », puis
+        // « soumis pour validation » et « validé » sur ses propres actions.
+        $destinataires = $destinataires
+            ->filter()
+            ->reject(fn (User $user) => $auteur !== null && $user->id === $auteur->id)
+            ->unique('id')
+            ->values();
 
         if ($destinataires->isEmpty()) {
             return;
@@ -590,10 +778,10 @@ class WorkflowService
     }
 
     // Utilisé pour les 2 étapes du circuit Signature DG/Trésorerie sans
-    // destinataire nominatif unique en base (contrairement à transferer(),
-    // qui a destinataire_transfert_id) — tout utilisateur ayant le
+    // destinataire nominatif unique en base (contrairement à
+    // transfererAuService(), qui vise le responsable du service) — tout utilisateur ayant le
     // privilège concerné est prévenu, même principe que
-    // DelegationDgaIndex/OrganisationIndex pour "qui peut agir ici".
+    // OrganisationIndex pour "qui peut agir ici".
     private function utilisateursAvecPrivilege(string $cle): Collection
     {
         return User::query()->get()->filter(fn (User $u) => $u->hasPrivilege($cle))->values();
@@ -625,7 +813,10 @@ class WorkflowService
         $this->verifierTransition($courrier, 'archive');
 
         DB::transaction(function () use ($courrier) {
-            $courrier->update(['statut' => 'archive']);
+            // 2026-10-30 (conformité de l'archivage) — date d'archivage et
+            // échéance de conservation (ConservationService).
+            $courrier->update(['statut' => 'archive', 'archive_le' => now()]);
+            app(ConservationService::class)->appliquer($courrier);
 
             CourrierHistorique::create([
                 'courrier_id' => $courrier->id,
@@ -636,6 +827,11 @@ class WorkflowService
         });
 
         $this->diffuserChangementStatut($courrier->id, 'archive');
+
+        // 2026-10-30 — copie d'archive PDF/A, en file d'attente (Règle n°1).
+        if (config('services.archivage.pdfa_auto')) {
+            ConvertirPdfaJob::dispatch($courrier->id)->afterCommit();
+        }
     }
 
     // Module 9 — "Décharge" (specifications-modules-GEC.md point 5) : émise

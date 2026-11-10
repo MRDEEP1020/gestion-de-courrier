@@ -63,6 +63,13 @@
                     @if ($notification->data['sous_libelle'] ?? null)
                         <flux:text class="block truncate text-sm text-zinc-500">{{ $notification->data['sous_libelle'] }}</flux:text>
                     @endif
+                    {{-- 2026-10-30 — message de l'auteur (relance, motif…), voir
+                         CourrierNotification::toDatabase(). --}}
+                    @if ($notification->data['commentaire'] ?? null)
+                        <flux:text class="mt-1 block rounded-md border-s-2 border-brand-accent bg-brand-surface-soft px-2 py-1 text-sm text-brand-text-primary dark:bg-zinc-800">
+                            « {{ $notification->data['commentaire'] }} »
+                        </flux:text>
+                    @endif
                     {{-- 2026-10-12, demande explicite de l'utilisateur
                          ("make each notification to show who send it") —
                          'envoye_par' ajouté à l'enveloppe générique de

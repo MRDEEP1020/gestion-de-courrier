@@ -96,17 +96,24 @@
                 <flux:subheading>{{ __('Tous les courriers contenus dans le dossier sélectionné.') }}</flux:subheading>
             </div>
 
-            <div x-data="squeletteMinimum()" class="overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+            {{-- Format de tableau commun (2026-10-29, « same format on all the
+                 tables of the project ») — celui de « Tous les courriers »
+                 (voir le commentaire de courrierList.blade.php) : en-têtes en
+                 petites capitales soulignés navy, lignes sur UNE
+                 seule ligne (texte trop long coupé, lisible en entier au
+                 survol ; statut et chronomètre côte à côte), 16 px en haut et en bas de chaque
+                 cellule. --}}
+            <div x-data="squeletteMinimum()" class="@container overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                 <div wire:loading.class.remove="hidden" x-ref="sentinelle" class="hidden" aria-hidden="true"></div>
                 <table class="w-full text-sm">
-                    <thead class="bg-brand-table-header text-left text-sm font-medium text-zinc-600 dark:bg-zinc-800">
+                    <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
                         <tr>
-                            <th class="py-3 pl-4 pr-3">{{ __('N° Courrier') }}</th>
-                            <th class="py-3 pr-3">{{ __('Objet') }}</th>
-                            <th class="py-3 pr-3">{{ __('Expéditeur') }}</th>
-                            <th class="py-3 pr-3">{{ __('Date de dépôt') }}</th>
-                            <th class="py-3 pr-3">{{ __('Statut') }}</th>
-                            <th class="py-3 pr-4">{{ __('Actions') }}</th>
+                            <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5 pl-4">{{ __('N° Courrier') }}</th>
+                            <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Objet') }}</th>
+                            <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Expéditeur') }}</th>
+                            <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Date de réception') }}</th>
+                            <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Statut') }}</th>
+                            <th class="relative w-px py-3 pr-4"><span class="sr-only">{{ __('Actions') }}</span></th>
                         </tr>
                     </thead>
                     {{-- Visibilité pilotée par l'état `visible` de
@@ -118,20 +125,32 @@
                     </tbody>
                     <tbody x-show="!visible" class="divide-y divide-zinc-200 dark:divide-zinc-700">
                         @forelse ($this->courriersDuNoeud as $courrier)
+                            @php($expediteurLigne = $courrier->expediteur_nom ?: $courrier->expediteur_organisation ?: '—')
                             <tr wire:key="courrier-{{ $courrier->id }}" class="hover:bg-zinc-50 dark:hover:bg-zinc-800">
-                                <td class="py-3 pl-4 pr-3 font-medium">{{ $courrier->numero_reference }}</td>
-                                <td class="max-w-xs truncate py-3 pr-3">{{ $courrier->objet }}</td>
-                                <td class="py-3 pr-3 text-zinc-600 dark:text-zinc-400">{{ $courrier->expediteur_nom ?: $courrier->expediteur_organisation ?: '—' }}</td>
-                                <td class="py-3 pr-3 text-zinc-600 dark:text-zinc-400">{{ $courrier->date_mouvement?->format('d/m/Y') ?? '—' }}</td>
-                                <td class="py-3 pr-3">
-                                    {{-- Chronomètre à côté du statut (2026-09-28, "when the date
-                                         is comming soon the colours should change") — empilé sur
-                                         2 lignes (2026-10-02, positionnement revu). --}}
-                                    <x-statut-avec-echeance :courrier="$courrier" />
+                                <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 pl-4 font-medium"><span class="block max-w-36 truncate" title="{{ $courrier->numero_reference }}">{{ $courrier->numero_reference }}</span></td>
+                                <td class="w-[60%] min-w-28 py-4 pr-3 @min-[60rem]:pr-5">
+                                    <div class="w-0 min-w-full truncate" title="{{ $courrier->objet }}">{{ $courrier->objet }}</div>
                                 </td>
-                                <td class="py-3 pr-4">
+                                <td class="w-[40%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-600 dark:text-zinc-400">
+                                    <div class="w-0 min-w-full truncate" title="{{ $expediteurLigne }}">{{ $expediteurLigne }}</div>
+                                </td>
+                                <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 text-zinc-600 dark:text-zinc-400">{{ $courrier->date_mouvement?->format('d/m/Y') ?? '—' }}</td>
+                                <td class="py-4 pr-3 @min-[60rem]:pr-5">
+                                    {{-- Chronomètre à côté du statut (2026-09-28, "when the date
+                                         is comming soon the colours should change") — compte à
+                                         rebours toujours visible sur cette page ; 2026-10-29 :
+                                         sur la même ligne que le statut (format commun), même
+                                         en carte étroite (colonne centrale de 1366 px) : le
+                                         tableau y défile déjà, des lignes empilées ne feraient
+                                         que les rendre plus hautes. --}}
+                                    <div class="flex items-center gap-1 whitespace-nowrap">
+                                        <x-statut-badge :statut="$courrier->statut" class="rounded-md! px-2! font-semibold!" />
+                                        <x-chronometre :courrier="$courrier" />
+                                    </div>
+                                </td>
+                                <td class="py-4 pr-4 text-center">
                                     <flux:dropdown position="bottom" align="end">
-                                        <flux:button variant="ghost" size="sm" icon="ellipsis-horizontal" square :aria-label="__('Actions')" />
+                                        <flux:button variant="ghost" size="xs" icon="ellipsis-horizontal" square :aria-label="__('Actions')" />
                                         <flux:menu>
                                             <flux:menu.item icon="eye" :href="route('courriers.show', $courrier->id)" wire:navigate>{{ __('Voir') }}</flux:menu.item>
                                             {{-- "Retirer du dossier" n'a de sens que sur un vrai

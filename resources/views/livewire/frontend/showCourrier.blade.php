@@ -19,7 +19,7 @@
 
 <section class="w-full" x-data="{ onglet: @js($ongletInitial) }">
     <flux:breadcrumbs>
-        <flux:breadcrumbs.item href="{{ route('dashboard') }}" wire:navigate>{{ __('Accueil') }}</flux:breadcrumbs.item>
+        <flux:breadcrumbs.item href="{{ route('dashboard') }}" wire:navigate>{{ __('Accueil') }}</flux:breadcrumbs.item> 
         <flux:breadcrumbs.item :href="route('courriers.rechercher')" wire:navigate>{{ __('Courriers') }}</flux:breadcrumbs.item>
         <flux:breadcrumbs.item>{{ __('Détail du courrier') }}</flux:breadcrumbs.item>
     </flux:breadcrumbs>
@@ -73,30 +73,14 @@
                     {{ __('Modifier') }}
                 </flux:button>
             @endif
-            {{-- 2026-10-13, demande explicite de l'utilisateur ("add the
-                 button here") — même raccourci "Traiter moi-même" que dans
-                 le bloc "Affecter" plus bas (CourrierPolicy::traiterMoiMeme()),
-                 repris ici dans l'en-tête pour un accès direct depuis le
-                 haut de la fiche. Ouvre une modale (pas d'action directe,
-                 voir "je ne peut pa mettre un delais") : le bouton de
-                 l'en-tête n'a aucun champ délai à proximité, contrairement
-                 au bloc "Affecter" plus bas. --}}
-            @if ($this->peutTraiterMoiMeme)
-                <flux:button variant="primary" icon="user-circle" wire:click="ouvrirTraiterMoiMeme">
-                    {{ __('Traiter moi-même') }}
-                </flux:button>
-            @endif
-            {{-- courriers.telecharger / courriers.imprimer_bordereau (2026-09-23). --}}
-            @if ($courrier->fichier_path && auth()->user()->can('telecharger', $courrier))
-                <flux:button variant="outline" icon="arrow-down-tray" :href="route('courriers.document', $courrier->id)">
-                    {{ __('Télécharger') }}
-                </flux:button>
-            @endif
-            @can('imprimerBordereau', $courrier)
-                <flux:button variant="outline" icon="printer" :href="route('courriers.bordereau', $courrier->id)" target="_blank">
-                    {{ __('Imprimer') }}
-                </flux:button>
-            @endcan
+            {{-- Actions du circuit de traitement de l'étape en cours (2026-10-29)
+                 — voir le partiel. « Traiter moi-même » est devenu le choix
+                 « Me l'affecter et commencer » de la modale « Affecter » ;
+                 « Télécharger » et « Imprimer » ne sont plus dans l'en-tête
+                 (« remove the telecharge and imprimer button from there ») :
+                 le téléchargement reste dans la barre du panneau « Aperçu du
+                 courrier », le bordereau s'imprime depuis l'onglet « Général ». --}}
+            @include('partials.circuit-actions')
         </div>
     </div>
 
@@ -117,6 +101,56 @@
             </flux:callout.text>
         </flux:callout>
     @endif
+
+    {{-- 2026-10-29 — remontés de l'onglet « Circuit de traitement » avec les
+         boutons de l'en-tête : ce que la personne doit faire maintenant se
+         voit sans ouvrir d'onglet. Refus par un service : l'accueil doit
+         réorienter le courrier (motif). Transfert en attente : le
+         responsable du service destinataire doit l'accepter ou le refuser
+         (son contenu lui reste masqué jusque-là, CourrierPolicy::voirContenu()). --}}
+    @php $transfertEnTete = $courrier->dernierTransfert; @endphp
+    @if ($courrier->statut === 'en_attente_de_transfert' && $transfertEnTete?->estRefuse())
+        <flux:callout variant="warning" icon="arrow-uturn-left" class="mt-4">
+            <flux:callout.heading>{{ __('Refusé par le service :service', ['service' => $transfertEnTete->service?->nom]) }}</flux:callout.heading>
+            <flux:callout.text>
+                {{ $transfertEnTete->decidePar?->name }}, {{ $transfertEnTete->decide_le?->format('d/m/Y H:i') }} —
+                {{ __('Motif') }} : <strong>{{ $transfertEnTete->motif_refus }}</strong>
+            </flux:callout.text>
+        </flux:callout>
+    @elseif ($courrier->statut === 'en_cours_de_transfert' && $this->peutDeciderTransfert)
+        <flux:callout icon="inbox-arrow-down" class="mt-4">
+            <flux:callout.heading>{{ __('Courrier transféré à votre service') }}</flux:callout.heading>
+            <flux:callout.text>
+                {{ __(':agent a transféré ce courrier à votre service le :date. Acceptez-le pour afficher son contenu et recevoir l\'original papier, ou refusez-le s\'il ne concerne pas votre service.', ['agent' => $transfertEnTete?->transferePar?->name ?? __('L\'accueil'), 'date' => $transfertEnTete?->created_at?->format('d/m/Y H:i')]) }}
+            </flux:callout.text>
+        </flux:callout>
+    {{-- 2026-10-29 (ordre remise → signature → affectation) — l'étape
+         suivante de la décharge, dite à chacun : l'accueil remet l'original,
+         le service signe sa réception, puis seulement le courrier s'affecte
+         (Courrier::dechargeTerminee()). --}}
+    @elseif ($courrier->statut === 'enregistre' && $transfertEnTete?->estAccepte() && ! $courrier->dechargeTerminee())
+        @if ($this->peutMarquerOriginalRemis)
+            <flux:callout icon="document-check" class="mt-4">
+                <flux:callout.heading>{{ __('Accepté par le service :service', ['service' => $transfertEnTete->service?->nom]) }}</flux:callout.heading>
+                <flux:callout.text>{{ __('Remettez-lui l\'original papier, puis confirmez la remise : le service pourra ensuite signer sa réception et affecter le courrier.') }}</flux:callout.text>
+            </flux:callout>
+        @elseif ($this->peutAffecter || $this->peutSignerReception)
+            <flux:callout icon="document-check" class="mt-4">
+                @if (! $transfertEnTete->original_remis_le)
+                    <flux:callout.heading>{{ __('En attente de l\'original papier') }}</flux:callout.heading>
+                    <flux:callout.text>{{ __('L\'accueil doit d\'abord vous remettre l\'original et confirmer la remise. Vous pourrez ensuite signer sa réception, puis affecter le courrier.') }}</flux:callout.text>
+                @elseif ($this->peutSignerReception)
+                    <flux:callout.heading>{{ __('Original papier remis') }}</flux:callout.heading>
+                    <flux:callout.text>{{ __('Signez la réception de l\'original pour pouvoir affecter le courrier.') }}</flux:callout.text>
+                @else
+                    <flux:callout.heading>{{ __('Original papier remis') }}</flux:callout.heading>
+                    <flux:callout.text>{{ __('En attente de la signature de la réception par :nom avant l\'affectation.', ['nom' => ($transfertEnTete->decidePar ?? $transfertEnTete->service?->responsable)?->name ?? __('le service')]) }}</flux:callout.text>
+                @endif
+            </flux:callout>
+        @endif
+    @endif
+
+    @include('partials.circuit-modales')
 
     <div class="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div>
@@ -151,9 +185,13 @@
                             {{ __('Pièces jointes') }} ({{ $courrier->piecesJointes->count() }})
                         </button>
                     @endif
+                    {{-- 2026-10-29 (« rename the circuit de traitement since it now
+                         displays only the décharge ») — ex-« Circuit de traitement »,
+                         ses actions sont dans l'en-tête ; la clé 'circuit' reste
+                         (liens ?onglet=circuit existants). --}}
                     <button type="button" x-on:click="onglet = 'circuit'" :class="onglet === 'circuit' ? 'border-brand-accent text-brand-accent' : 'border-transparent text-brand-text-secondary hover:border-zinc-300 hover:text-brand-text-primary'" class="-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors">
-                        <flux:icon.arrow-path-rounded-square class="size-4" />
-                        {{ __('Circuit de traitement') }}
+                        <flux:icon.document-check class="size-4" />
+                        {{ __('Décharge') }}
                     </button>
                     @if ($this->droits['voirHistorique'])
                         <button type="button" x-on:click="onglet = 'historique'" :class="onglet === 'historique' ? 'border-brand-accent text-brand-accent' : 'border-transparent text-brand-text-secondary hover:border-zinc-300 hover:text-brand-text-primary'" class="-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors">
@@ -184,9 +222,17 @@
             {{-- ONGLET GÉNÉRAL --}}
             <div x-show="onglet === 'general'" x-cloak class="mt-4 space-y-6">
                 <div class="rounded-2xl border border-brand-border bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-                    <div class="mb-4 flex items-center gap-2">
+                    <div class="mb-4 flex flex-wrap items-center gap-2">
                         <flux:icon.information-circle class="size-4 text-brand-accent" />
                         <flux:heading level="3">{{ __('Informations générales') }}</flux:heading>
+                        {{-- courriers.imprimer_bordereau (2026-09-23) — déplacé ici
+                             depuis l'en-tête le 2026-10-29 (« remove the telecharge
+                             and imprimer button from there »). --}}
+                        @can('imprimerBordereau', $courrier)
+                            <flux:button size="sm" variant="outline" icon="printer" class="ml-auto" :href="route('courriers.bordereau', $courrier->id)" target="_blank">
+                                {{ __('Imprimer le bordereau') }}
+                            </flux:button>
+                        @endcan
                     </div>
 
                     {{-- Maquette "Détail du courrier" (2026-09-18, "use this
@@ -270,7 +316,7 @@
                                 <flux:text class="font-bold">{{ $courrier->service?->nom ?? __('— pas encore transféré —') }}</flux:text>
                             </div>
                             <div>
-                                <flux:text class="text-xs uppercase text-zinc-500">{{ __('Date d\'envoi') }}</flux:text>
+                                <flux:text class="text-xs uppercase text-zinc-500">{{ __('Date de réception') }}</flux:text>
                                 <flux:text class="font-bold">{{ $courrier->date_mouvement->format('d/m/Y') }}</flux:text>
                             </div>
                         </div>
@@ -367,9 +413,14 @@
                          toute étape franchie OU en cours affiche une coche, pas un
                          numéro — seule une étape vraiment FUTURE affiche une icône
                          neutre (horloge), jamais son numéro d'ordre. --}}
-                    <div class="flex min-w-max items-center overflow-x-auto pb-2">
+                    {{-- 2026-10-30 — étapes de largeur fixe (w-20) et traits
+                         extensibles (flex-1) : tout tient dans la carte à 1366 px
+                         (avant, « Clôture » débordait, défilement peu visible) ;
+                         alignement en haut pour que les ronds restent alignés
+                         quand une étape a une ligne de plus (« par le responsable »). --}}
+                    <div class="flex items-start overflow-x-auto pb-2">
                         @foreach ($this->etapesParcours as $etape)
-                            <div class="flex flex-col items-center text-center">
+                            <div class="flex w-20 shrink-0 flex-col items-center text-center">
                                 <span class="flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold {{ match (true) {
                                     $loop->first && $etape['atteinte'] => 'bg-brand-success text-white',
                                     $etape['atteinte'] || $etape['courante'] => 'bg-brand-accent text-white',
@@ -381,11 +432,14 @@
                                         <flux:icon.clock class="size-4" />
                                     @endif
                                 </span>
-                                <span class="mt-1 w-24 text-xs font-medium {{ $etape['atteinte'] || $etape['courante'] ? 'text-brand-text-primary' : 'text-brand-text-muted' }}">{{ $etape['libelle'] }}</span>
-                                <span class="w-24 text-xs {{ $etape['courante'] ? 'text-brand-warning' : 'text-brand-text-muted' }}">{{ $etape['sousLibelle'] }}</span>
+                                <span class="mt-1 w-full text-xs font-medium {{ $etape['atteinte'] || $etape['courante'] ? 'text-brand-text-primary' : 'text-brand-text-muted' }}">{{ $etape['libelle'] }}</span>
+                                <span class="w-full text-xs {{ $etape['courante'] ? 'text-brand-warning' : 'text-brand-text-muted' }}">{{ $etape['sousLibelle'] }}</span>
+                                @if ($etape['precision'])
+                                    <span class="w-full text-xs italic text-brand-text-muted">{{ $etape['precision'] }}</span>
+                                @endif
                             </div>
                             @if (! $loop->last)
-                                <div class="mx-2 h-px w-10 shrink-0 {{ $etape['atteinte'] ? 'bg-brand-accent' : 'bg-brand-border' }}"></div>
+                                <div class="mx-1 mt-4 h-px min-w-3 flex-1 {{ $etape['atteinte'] ? 'bg-brand-accent' : 'bg-brand-border' }}"></div>
                             @endif
                         @endforeach
                     </div>
@@ -447,9 +501,16 @@
                         </div>
                         <div class="flex items-start gap-2">
                             <flux:icon.user class="mt-0.5 size-4 shrink-0 text-zinc-400" />
+                            {{-- 2026-10-30 (« Responsable au lieu de collaborateur assigné
+                                 quand c'est le responsable qui traite ») — titre du chef de
+                                 l'entité (Responsable, Chef de département, Directeur). --}}
+                            @php
+                                $affecte = $courrier->affectationCourante?->collaborateur;
+                                $affecteEstChef = $affecte && $courrier->service?->responsable_id === $affecte->id;
+                            @endphp
                             <div>
-                                <flux:text class="text-xs uppercase text-zinc-500">{{ __('Collaborateur assigné') }}</flux:text>
-                                <flux:text>{{ $courrier->affectationCourante?->collaborateur->name ?? '—' }}</flux:text>
+                                <flux:text class="text-xs uppercase text-zinc-500">{{ $affecteEstChef ? $courrier->service->titreChef() : __('Collaborateur assigné') }}</flux:text>
+                                <flux:text>{{ $affecte?->name ?? '—' }}</flux:text>
                             </div>
                         </div>
                         {{-- 2026-09-24 — le chronomètre en direct est en
@@ -469,13 +530,9 @@
                                 </flux:text>
                             </div>
                         </div>
-                        <div class="flex items-start gap-2">
-                            <flux:icon.building-office-2 class="mt-0.5 size-4 shrink-0 text-zinc-400" />
-                            <div>
-                                <flux:text class="text-xs uppercase text-zinc-500">{{ __('Service responsable') }}</flux:text>
-                                <flux:text>{{ $courrier->serviceResponsable?->nom ?? '—' }}</flux:text>
-                            </div>
-                        </div>
+                        {{-- 2026-10-30 — « Service responsable » retiré : jamais
+                             renseigné par le circuit, il doublait « Service
+                             destinataire » (Informations générales). --}}
                         <div class="flex items-start gap-2">
                             <flux:icon.chat-bubble-bottom-center-text class="mt-0.5 size-4 shrink-0 text-zinc-400" />
                             <div>
@@ -538,7 +595,10 @@
                             <flux:text class="mt-2 text-xs text-zinc-500">
                                 {{ __('Texte brut reconnu automatiquement, utilisé pour la recherche. Il peut contenir des erreurs de lecture — le document original fait foi.') }}
                             </flux:text>
-                            <pre class="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-zinc-50 p-3 font-mono text-sm leading-relaxed text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">{{ $courrier->texte_ocr }}</pre>
+                            {{-- 2026-11-09 — lisible, jamais copiable : même règle
+                                 que l'aperçu sécurisé du document (sélection,
+                                 copie, clic droit et impression bloqués). --}}
+                            <pre data-document-protege x-on:copy.prevent x-on:cut.prevent x-on:contextmenu.prevent class="mt-2 max-h-72 select-none overflow-auto whitespace-pre-wrap rounded-lg bg-zinc-50 p-3 font-mono text-sm leading-relaxed text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">{{ $courrier->texte_ocr }}</pre>
                         </details>
                     @endif
 
@@ -616,6 +676,85 @@
                     @endif
                     @endif
                 </div>
+
+                {{-- 2026-10-30 — conformité de l'archivage (Module 9, voir
+                     DECISIONS.md "Archivage : conformité") : échéance de
+                     conservation, gel juridique, empreinte SHA-256 du
+                     document et copie d'archive PDF/A. --}}
+                @php
+                    $empreinteDocument = $this->empreintes->get(App\Models\EmpreinteFichier::TYPE_COURRIER);
+                @endphp
+                @if ($courrier->statut === 'archive' || $empreinteDocument)
+                    <div class="rounded-2xl border border-brand-border bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                        <div class="mb-4 flex items-center gap-2">
+                            <flux:icon.archive-box class="size-4 text-brand-accent" />
+                            <flux:heading level="3">{{ __('Archivage et intégrité') }}</flux:heading>
+                        </div>
+
+                        <div class="grid gap-4 sm:grid-cols-2">
+                            @if ($courrier->statut === 'archive')
+                                <div class="flex items-start gap-2">
+                                    <flux:icon.archive-box class="mt-0.5 size-4 shrink-0 text-zinc-400" />
+                                    <div>
+                                        <flux:text class="text-xs uppercase text-zinc-500">{{ __('Archivé le') }}</flux:text>
+                                        <flux:text>{{ $courrier->archive_le?->format('d/m/Y') ?? '—' }}</flux:text>
+                                    </div>
+                                </div>
+                                <div class="flex items-start gap-2">
+                                    <flux:icon.clock class="mt-0.5 size-4 shrink-0 text-zinc-400" />
+                                    <div>
+                                        <flux:text class="text-xs uppercase text-zinc-500">{{ __('Conserver jusqu\'au') }}</flux:text>
+                                        <flux:text class="flex flex-wrap items-center gap-2">
+                                            {{ $courrier->conserver_jusqua?->format('d/m/Y') ?? '—' }}
+                                            @if ($courrier->gel_juridique)
+                                                <flux:badge size="sm" color="amber" icon="lock-closed">{{ __('Gel juridique') }}</flux:badge>
+                                            @endif
+                                        </flux:text>
+                                    </div>
+                                </div>
+                            @endif
+
+                            <div class="flex items-start gap-2">
+                                <flux:icon.finger-print class="mt-0.5 size-4 shrink-0 text-zinc-400" />
+                                <div class="min-w-0">
+                                    <flux:text class="text-xs uppercase text-zinc-500">{{ __('Intégrité du document') }}</flux:text>
+                                    @if (! $empreinteDocument)
+                                        <flux:text>{{ __('Empreinte pas encore calculée') }}</flux:text>
+                                    @elseif ($empreinteDocument->statut === App\Models\EmpreinteFichier::STATUT_OK)
+                                        <flux:text class="flex items-center gap-1 text-brand-success-dark">
+                                            <flux:icon.check-circle variant="micro" class="size-4" />
+                                            {{ __('Intact') }}
+                                        </flux:text>
+                                    @elseif ($empreinteDocument->statut === App\Models\EmpreinteFichier::STATUT_DETRUIT)
+                                        <flux:text>{{ __('Détruit à échéance de conservation') }}</flux:text>
+                                    @else
+                                        <flux:text class="flex items-center gap-1 text-brand-danger-dark">
+                                            <flux:icon.exclamation-triangle variant="micro" class="size-4" />
+                                            {{ $empreinteDocument->statut === App\Models\EmpreinteFichier::STATUT_MANQUANT ? __('Fichier introuvable sur le stockage') : __('Fichier modifié depuis son enregistrement') }}
+                                        </flux:text>
+                                    @endif
+                                    @if ($empreinteDocument)
+                                        <flux:text class="block text-xs text-zinc-500">
+                                            {{ __('Scellé le :scelle', ['scelle' => $empreinteDocument->scelle_le?->format('d/m/Y H:i')]) }}@if ($empreinteDocument->verifie_le) · {{ __('vérifié le :verifie', ['verifie' => $empreinteDocument->verifie_le->format('d/m/Y H:i')]) }}@endif
+                                        </flux:text>
+                                        <flux:text class="block truncate font-mono text-xs text-zinc-500" title="SHA-256 {{ $empreinteDocument->sha256 }}">SHA-256 {{ $empreinteDocument->sha256 }}</flux:text>
+                                    @endif
+                                </div>
+                            </div>
+
+                            @if ($courrier->fichier_pdfa_path)
+                                <div class="flex items-start gap-2">
+                                    <flux:icon.document-check class="mt-0.5 size-4 shrink-0 text-zinc-400" />
+                                    <div>
+                                        <flux:text class="text-xs uppercase text-zinc-500">{{ __('Copie d\'archive PDF/A') }}</flux:text>
+                                        {{-- Conservée sur le serveur, jamais téléchargeable (2026-11-09). --}}
+                                        <flux:text>{{ __('Conservée sur le serveur') }}</flux:text>
+                                    </div>
+                                </div>
+                            @endif
+                        </div>
+                    </div>
+                @endif
             </div>
 
             {{-- ONGLET PIÈCES JOINTES — courriers.voir_pieces_jointes (2026-09-23) --}}
@@ -624,16 +763,15 @@
                 @if ($courrier->piecesJointes->isEmpty())
                     <flux:text class="text-zinc-500">{{ __('Aucune pièce jointe pour ce courrier.') }}</flux:text>
                 @else
-                    {{-- Nom seul sans courriers.telecharger (2026-09-23). --}}
-                    @php $peutTelecharger = auth()->user()->can('telecharger', $courrier); @endphp
+                    {{-- 2026-11-09 — consultation en aperçu sécurisé (filigrané),
+                         plus aucun téléchargement ; nom seul tant que le contenu
+                         est masqué (transfert pas encore accepté). --}}
                     <ul class="space-y-2">
                         @foreach ($courrier->piecesJointes as $pieceJointe)
                             <li class="flex items-center gap-2">
                                 <flux:icon name="paper-clip" class="size-4 shrink-0 text-zinc-400" />
-                                @if ($peutTelecharger)
-                                    <flux:link :href="route('pieces-jointes.telecharger', $pieceJointe)">
-                                        {{ $pieceJointe->nom_original }}
-                                    </flux:link>
+                                @if ($this->peutVoirContenu)
+                                    <x-apercu.piece-jointe :piece-jointe="$pieceJointe" suffixe="onglet" :reference="$courrier->numero_reference" />
                                 @else
                                     <span>{{ $pieceJointe->nom_original }}</span>
                                 @endif
@@ -644,7 +782,8 @@
             </div>
             @endif
 
-            {{-- ONGLET CIRCUIT DE TRAITEMENT — chaque formulaire ci-dessous est
+            {{-- ONGLET DÉCHARGE (ex-« Circuit de traitement », renommé le
+                 2026-10-29) — chaque formulaire ci-dessous est
                  déplacé TEL QUEL depuis l'ancienne mise en page à une
                  colonne, mêmes conditions PHP, aucune logique changée. --}}
             <div x-show="onglet === 'circuit'" x-cloak class="mt-4 rounded-2xl border border-brand-border bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
@@ -662,303 +801,120 @@
                     @endif
                 </flux:text>
 
-                {{-- Module 1/4 — la réceptionniste transfère explicitement le courrier
-                     (2026-09-15, voir DECISIONS.md, synchronisation SRS-GEC.pdf) — plus
-                     d'envoi automatique à l'enregistrement. Mise à jour (2026-09-15) :
-                     elle choisit désormais QUI dans une modale ("Destinataires de
-                     transfert" — DGA, ADJ DGA, ou tout autre destinataire que
-                     l'administrateur lui a autorisé) plutôt qu'un envoi générique "au
-                     DGA". --}}
-                @if ($courrier->statut === 'en_attente_de_transfert' && $this->peutTransferer)
-                    <div class="mt-3">
-                        <flux:modal.trigger name="transferer-modal">
-                            <flux:button size="sm" variant="primary">{{ __('Transférer') }}</flux:button>
-                        </flux:modal.trigger>
-                    </div>
+                {{-- Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au
+                     service et acceptation") — plus de DGA : l'accueil transfère
+                     directement au service concerné, qui accepte (décharge
+                     numérotée, preuve avant la remise de l'original papier) ou
+                     refuse avec un motif. --}}
+                @php $transfert = $courrier->dernierTransfert; @endphp
 
-                    <flux:modal name="transferer-modal" class="w-full max-w-sm">
-                        <form wire:submit="transferer" class="space-y-4">
-                            <flux:heading size="lg">{{ __('Transférer à') }}</flux:heading>
+                {{-- 2026-10-29 — les actions de l'étape en cours sont dans l'en-tête
+                     de la fiche (partials/circuit-actions.blade.php), leurs modales
+                     hors des onglets (partials/circuit-modales.blade.php) ; le refus
+                     par un service et la demande d'acceptation sont affichés sous
+                     l'en-tête. Cet onglet garde l'état du circuit et la décharge. --}}
+                <flux:text class="mt-2 flex items-center gap-1.5 text-sm text-zinc-500">
+                    <flux:icon.arrow-up-circle class="size-4 shrink-0" />
+                    {{ __('Les actions de l\'étape en cours sont en haut de la page, à côté de « Retour à la liste ».') }}
+                </flux:text>
 
-                            @if ($this->destinatairesTransfert->isEmpty())
-                                <flux:text class="text-zinc-500">{{ __('Aucun destinataire autorisé pour votre compte. Contactez un administrateur.') }}</flux:text>
-                            @else
-                                <flux:radio.group wire:model="destinataireTransfertChoisi">
-                                    @foreach ($this->destinatairesTransfert as $destinataire)
-                                        <flux:radio value="{{ $destinataire->id }}" label="{{ $destinataire->name }}" />
-                                    @endforeach
-                                </flux:radio.group>
-                                @error('destinataireTransfertChoisi') <flux:text class="mt-1 text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
-                            @endif
-
-                            <div class="flex justify-end gap-2">
-                                <flux:modal.close>
-                                    <flux:button variant="ghost">{{ __('Annuler') }}</flux:button>
-                                </flux:modal.close>
-                                <flux:button type="submit" variant="primary" :disabled="$this->destinatairesTransfert->isEmpty()">{{ __('Confirmer le transfert') }}</flux:button>
-                            </div>
-                        </form>
-                    </flux:modal>
-                @elseif ($courrier->statut === 'en_cours_de_transfert' && ! $this->peutValiderService)
-                    <flux:text class="mt-3 text-sm text-zinc-500">{{ __('En cours de transfert — en attente de validation du DGA/ADJ DGA.') }}</flux:text>
+                @if ($courrier->statut === 'en_cours_de_transfert' && ! $this->peutDeciderTransfert)
+                    <flux:text class="mt-3 text-sm text-zinc-500">
+                        {{ __('Transféré au service :service le :date — en attente de son acceptation.', ['service' => $transfert?->service?->nom ?? $courrier->service?->nom, 'date' => $transfert?->created_at?->format('d/m/Y H:i')]) }}
+                    </flux:text>
                 @endif
 
-                {{-- Module 1/4 — validation DGA/ADJ du service (courrier entrant
-                     non-sinistre uniquement, voir RegistrationForm::enregistrer()).
-                     Module "Organisation" v2 (2026-09-22, spec §16) — cascade
-                     Site → Département → Service/Unité au lieu d'un
-                     sélecteur plat unique, naviguant la vraie structure
-                     organisationnelle. --}}
-                @if ($courrier->statut === 'en_cours_de_transfert' && $this->peutValiderService)
-                    <form wire:submit="validerService" class="mt-3 flex flex-wrap items-end gap-2">
-                        {{-- 2026-09-23, clarification explicite de l'utilisateur : le
-                             Site est OPTIONNEL — des Départements réels existent
-                             déjà à la racine (sans Site au-dessus) en attendant le
-                             vrai nom du/des site(s) réel(s), jamais fabriqué. Option
-                             vide RÉELLE (pas seulement le placeholder) pour pouvoir
-                             revenir à "racine" une fois un site choisi — même piège
-                             que les 3 précédents cette session (flux:select "freeze"). --}}
-                        <flux:select wire:model.live="siteSelectionneId" size="sm" :label="__('Site')" placeholder="{{ __('— Aucun (racine) —') }}" class="max-w-xs">
-                            <flux:select.option value="">{{ __('— Aucun (racine) —') }}</flux:select.option>
-                            @foreach ($this->sitesDisponibles as $site)
-                                <flux:select.option value="{{ $site->id }}">{{ $site->name }}</flux:select.option>
-                            @endforeach
-                        </flux:select>
-
-                        {{-- 2026-10-09 — niveau Direction (OrganizationUnit::TYPE_DIRECTION),
-                             OPTIONNEL comme Site : même wire:key que les niveaux
-                             suivants, mêmes raisons (voir commentaire ci-dessous). --}}
-                        @if ($this->directionsDisponibles->isNotEmpty())
-                            <div wire:key="cascade-direction-{{ $siteSelectionneId ?? 'racine' }}">
-                                <flux:select wire:model.live="directionSelectionneeId" size="sm" :label="__('Direction')" placeholder="{{ __('— Aucune (direct) —') }}" class="max-w-xs">
-                                    <flux:select.option value="">{{ __('— Aucune (direct) —') }}</flux:select.option>
-                                    @foreach ($this->directionsDisponibles as $direction)
-                                        <flux:select.option value="{{ $direction->id }}">{{ $direction->name }}</flux:select.option>
-                                    @endforeach
-                                </flux:select>
+                {{-- Décharge du transfert accepté + remise de l'original papier
+                     par l'accueil (preuve que le service a accepté AVANT la remise).
+                     2026-10-27 (« arrange the décharge design as a real
+                     décharge ») — présentée comme un document (en-tête, numéro,
+                     remis par / reçu par) avec sa version imprimable à signer
+                     (TransfertDechargeController, PDF). --}}
+                @if ($transfert?->estAccepte())
+                    <div class="mt-3 overflow-hidden rounded-xl border border-brand-border bg-white text-sm shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                        <div class="flex flex-wrap items-center justify-between gap-2 border-b-2 border-brand-navy px-4 py-3 dark:border-zinc-500">
+                            <div class="flex items-center gap-2">
+                                <flux:icon.document-check class="size-5 text-brand-navy dark:text-zinc-300" />
+                                <div>
+                                    <div class="text-xs font-semibold uppercase tracking-widest text-brand-navy dark:text-zinc-300">{{ __('Décharge') }}</div>
+                                    <div class="font-semibold">{{ __('N° :numero', ['numero' => $transfert->numero_decharge]) }}</div>
+                                </div>
                             </div>
-                        @endif
-
-                        {{-- 2026-09-23 : wire:key + option vide RÉELLE sur chaque
-                             niveau conditionnel, et Service/Unité en .live — sans
-                             ça, un sélecteur masqué puis ré-affiché pouvait
-                             afficher un choix différent de la valeur réellement
-                             envoyée (bug constaté : validé vers "Sinistre Santé"
-                             alors que l'écran montrait "Departement Informatique"). --}}
-                        @if ($this->departementsDisponibles->isNotEmpty())
-                            <div wire:key="cascade-departement-{{ $directionSelectionneeId ?? $siteSelectionneId ?? 'racine' }}">
-                                <flux:select wire:model.live="departementSelectionneId" size="sm" :label="__('Département')" class="max-w-xs">
-                                    <flux:select.option value="">{{ __('Choisir un département') }}</flux:select.option>
-                                    @foreach ($this->departementsDisponibles as $departement)
-                                        <flux:select.option value="{{ $departement->id }}">{{ $departement->name }}</flux:select.option>
-                                    @endforeach
-                                </flux:select>
-                            </div>
-                        @endif
-
-                        @if ($departementSelectionneId && $this->unitesDisponibles->isNotEmpty())
-                            <div wire:key="cascade-unite-{{ $departementSelectionneId }}">
-                                <flux:select wire:model.live="uniteSelectionneeId" size="sm" :label="__('Service / Unité')" class="max-w-xs">
-                                    <flux:select.option value="">{{ __('— Aucun (le département reçoit directement) —') }}</flux:select.option>
-                                    @foreach ($this->unitesDisponibles as $unite)
-                                        <flux:select.option value="{{ $unite->id }}">{{ $unite->name }}</flux:select.option>
-                                    @endforeach
-                                </flux:select>
-                            </div>
-                        @endif
-
-                        {{-- 2026-09-21 — demande explicite de l'utilisateur :
-                             la DGA confirme/corrige ici le niveau de
-                             confidentialité RÉELLEMENT opposable (voir
-                             CourrierPolicy::niveauSuffisant()), pré-rempli
-                             avec le choix de la réceptionniste à
-                             l'enregistrement (voir ShowCourrier::mount()) —
-                             jamais vide, un courrier réellement confidentiel
-                             dès l'enveloppe reste protégé même avant que la
-                             DGA n'ait validé. --}}
-                        <div wire:key="cascade-confidentialite">
-                            <flux:select wire:model="confidentialiteSelectionnee" size="sm" :label="__('Niveau de confidentialité')" class="max-w-xs">
-                                @foreach (range(1, \App\Models\User::niveauConfidentialiteMax()) as $niveau)
-                                    <flux:select.option value="{{ $niveau }}">{{ __('Niveau :n', ['n' => $niveau]) }}</flux:select.option>
-                                @endforeach
-                            </flux:select>
+                            @if ($transfert->original_remis_le && $transfert->reception_signee_le)
+                                <span class="inline-flex items-center gap-1 rounded-md bg-brand-success-light px-2 py-0.5 text-xs font-semibold text-brand-success-dark">
+                                    {{-- 2026-11-09 — seul le destinataire signe. --}}
+                                    <flux:icon.pencil-square class="size-3.5" /> {{ __('Signée par le destinataire') }}
+                                </span>
+                            @elseif ($transfert->original_remis_le)
+                                <span class="inline-flex items-center gap-1 rounded-md bg-brand-success-light px-2 py-0.5 text-xs font-semibold text-brand-success-dark">
+                                    <flux:icon.check class="size-3.5" /> {{ __('Original remis') }}
+                                </span>
+                            @else
+                                <span class="inline-flex items-center rounded-md bg-brand-warning-light px-2 py-0.5 text-xs font-semibold text-brand-warning-dark">{{ __('Original à remettre') }}</span>
+                            @endif
                         </div>
-                        <flux:button size="sm" type="submit">{{ __('Confirmer le service') }}</flux:button>
-                    </form>
-                    @error('uniteSelectionneeId') <flux:text class="mt-1 text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
-                    @error('confidentialiteSelectionnee') <flux:text class="mt-1 text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
+
+                        <dl class="grid gap-3 px-4 py-3 sm:grid-cols-2">
+                            <div>
+                                <dt class="text-xs font-semibold uppercase tracking-wide text-zinc-500">{{ __('Remis par — Service Courrier') }}</dt>
+                                <dd class="mt-0.5 font-medium">{{ ($transfert->originalRemisPar ?? $transfert->transferePar)?->name ?? __('—') }}</dd>
+                                {{-- 2026-11-09 — l'accueil confirme la remise, il ne
+                                     signe pas : seul le destinataire signe la décharge. --}}
+                                @if ($transfert->original_remis_le)
+                                    <dd class="mt-1 flex items-center gap-1.5 text-xs font-medium text-brand-success-dark">
+                                        <flux:icon.check-circle class="size-3.5 shrink-0" />
+                                        {{ __('Remise confirmée le :date', ['date' => $transfert->original_remis_le->format('d/m/Y à H:i')]) }}
+                                    </dd>
+                                @else
+                                    <dd class="mt-1 text-xs text-zinc-500">{{ __('Remise à confirmer') }}</dd>
+                                @endif
+                            </div>
+                            <div>
+                                <dt class="text-xs font-semibold uppercase tracking-wide text-zinc-500">{{ __('Reçu par — :service', ['service' => $transfert->service?->nom]) }}</dt>
+                                <dd class="mt-0.5 font-medium">{{ ($transfert->receptionSigneePar ?? $transfert->decidePar)?->name ?? __('—') }}</dd>
+                                <dd class="text-xs text-zinc-500">{{ __('transfert accepté le :date', ['date' => $transfert->decide_le?->format('d/m/Y à H:i')]) }}</dd>
+                                @if ($transfert->reception_signee_le)
+                                    <dd class="mt-1 flex items-center gap-1.5 text-xs font-medium text-brand-success-dark">
+                                        <flux:icon.pencil-square class="size-3.5 shrink-0" />
+                                        {{ __('Signé électroniquement le :date', ['date' => $transfert->reception_signee_le->format('d/m/Y à H:i')]) }}
+                                    </dd>
+                                @else
+                                    <dd class="mt-1 text-xs text-zinc-500">{{ __('Signature en attente') }}</dd>
+                                @endif
+                            </div>
+                        </dl>
+
+                        <div class="flex flex-wrap items-center gap-2 border-t border-brand-border bg-brand-surface-soft px-4 py-3 dark:border-zinc-700 dark:bg-zinc-800/50">
+                            <flux:button size="sm" variant="outline" icon="printer" :href="route('transferts.decharge', $transfert)" target="_blank">{{ __('Imprimer la décharge') }}</flux:button>
+                            @if ($this->peutMarquerOriginalRemis)
+                                <flux:modal.trigger name="remise-original-modal">
+                                    <flux:button size="sm" variant="primary" icon="document-check">{{ __('Marquer l\'original comme remis') }}</flux:button>
+                                </flux:modal.trigger>
+                            @endif
+                            @if ($this->peutSignerReception)
+                                <flux:modal.trigger name="signer-reception-modal">
+                                    <flux:button size="sm" variant="primary" icon="pencil-square">{{ __('Signer la réception') }}</flux:button>
+                                </flux:modal.trigger>
+                            @endif
+                        </div>
+                    </div>
+
                 @endif
 
                 {{-- Module 1/9 (2026-09-24) — pli confidentiel jamais ouvert :
                      son destinataire le marque comme remis, il est ensuite
                      archivé automatiquement (voir WorkflowService::cloturerConfidentiel()). --}}
                 @if ($this->peutCloturerConfidentiel)
-                    <div class="mt-3 space-y-2">
-                        <flux:text class="text-sm">{{ __('Pli confidentiel qui vous a été remis directement. Une fois traité, marquez-le comme remis : il sera archivé automatiquement.') }}</flux:text>
-                        <flux:button size="sm" variant="primary" wire:click="cloturerConfidentiel" wire:confirm="{{ __('Confirmer que ce pli confidentiel vous a bien été remis ?') }}">{{ __('Marquer comme remis') }}</flux:button>
-                    </div>
+                    <flux:text class="mt-3 text-sm">{{ __('Pli confidentiel qui vous a été remis directement. Une fois traité, marquez-le comme remis : il sera archivé automatiquement.') }}</flux:text>
                 @elseif ($courrier->confidentiel_direct && $courrier->statut === 'enregistre')
                     <flux:text class="mt-3 text-sm text-zinc-500">{{ __('Pli confidentiel envoyé directement à son destinataire — en attente de sa confirmation de remise.') }}</flux:text>
                 @endif
 
-                {{-- Module 6 — première affectation --}}
-                @if ($courrier->statut === 'enregistre' && $this->peutAffecter)
-                    <form wire:submit="affecter" class="mt-3 flex flex-wrap items-end gap-2">
-                        <flux:select wire:model="collaborateurSelectionne" size="sm" :label="__('Affecter à')" placeholder="{{ __('Choisir un collaborateur') }}" class="max-w-xs">
-                            @forelse ($this->collaborateursDuService as $c)
-                                <flux:select.option value="{{ $c['id'] }}">{{ $c['name'] }} — {{ trans_choice(':n en cours|:n en cours', $c['charge'], ['n' => $c['charge']]) }}</flux:select.option>
-                            @empty
-                                <flux:select.option value="" disabled>{{ __('Aucun collaborateur dans ce service') }}</flux:select.option>
-                            @endforelse
-                        </flux:select>
-                        {{-- Délai du chronomètre (2026-09-24) — prérempli avec le
-                             SLA actuel, le responsable le garde ou l'ajuste. --}}
-                        @if ($this->peutFixerDelai)
-                            <flux:input type="number" min="1" wire:model="delaiValeur" size="sm" :label="__('Délai de traitement')" class="w-28" />
-                            <flux:select wire:model="delaiUnite" size="sm" :label="__('Unité')" class="w-28">
-                                <flux:select.option value="jours">{{ __('jours') }}</flux:select.option>
-                                <flux:select.option value="heures">{{ __('heures') }}</flux:select.option>
-                            </flux:select>
-                        @endif
-                        <flux:button size="sm" type="submit">{{ __('Affecter') }}</flux:button>
-                    </form>
-                    @error('collaborateurSelectionne') <flux:text class="mt-1 text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
-                    @error('delaiValeur') <flux:text class="mt-1 text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
-                @endif
-
-                {{-- Module 5 — modifier le délai en cours de circuit, motif
-                     obligatoire (repart de maintenant, tracé dans l'historique). --}}
-                @if ($courrier->statut !== 'enregistre' && $this->peutFixerDelai)
-                    <details class="mt-3">
-                        <summary class="cursor-pointer text-sm text-zinc-500">{{ __('Modifier le délai de traitement') }}</summary>
-                        <form wire:submit="modifierDelai" class="mt-2 space-y-2">
-                            <div class="flex flex-wrap items-end gap-2">
-                                <flux:input type="number" min="1" wire:model="delaiValeur" size="sm" :label="__('Nouveau délai à partir de maintenant')" class="w-56" />
-                                <flux:select wire:model="delaiUnite" size="sm" :label="__('Unité')" class="w-28">
-                                    <flux:select.option value="jours">{{ __('jours') }}</flux:select.option>
-                                    <flux:select.option value="heures">{{ __('heures') }}</flux:select.option>
-                                </flux:select>
-                            </div>
-                            <flux:textarea wire:model="motifDelai" size="sm" rows="2" :label="__('Motif (obligatoire)')" />
-                            @error('delaiValeur') <flux:text class="text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
-                            @error('motifDelai') <flux:text class="text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
-                            <flux:button size="sm" type="submit">{{ __('Mettre à jour le délai') }}</flux:button>
-                        </form>
-                    </details>
-                @endif
-
-                {{-- Module 4 — collaborateur affecté : démarrer / soumettre --}}
-                @if ($this->peutTraiter)
-                    @if ($courrier->statut === 'affecte')
-                        <flux:button size="sm" class="mt-3" wire:click="demarrerTraitement">{{ __('Démarrer le traitement') }}</flux:button>
-                    @elseif ($courrier->statut === 'en_traitement' && $this->droits['soumettreValidation'])
-                        <div class="mt-3 space-y-2">
-                            <flux:textarea wire:model="commentaireCirculation" size="sm" rows="2" :label="__('Commentaire (optionnel)')" placeholder="{{ __('Réponse ou action effectuée…') }}" />
-                            <div class="flex items-center gap-2">
-                                {{-- 2026-10-14, retour utilisateur ("why can
-                                     he validate directly") — raccourci
-                                     visible seulement quand le traiteur ET
-                                     le validateur sont la même personne
-                                     (CourrierPolicy::validerDirectement()),
-                                     en plus du "Soumettre" classique
-                                     ci-dessous (toujours disponible, pour
-                                     qui préfère garder les 2 étapes). --}}
-                                @if ($this->droits['validerDirectement'])
-                                    <flux:button size="sm" variant="primary" wire:click="validerDirectement">{{ __('Valider directement') }}</flux:button>
-                                @endif
-                                <flux:button size="sm" variant="{{ $this->droits['validerDirectement'] ? 'outline' : 'primary' }}" wire:click="soumettrePourValidation">{{ __('Soumettre pour validation') }}</flux:button>
-                            </div>
-                        </div>
-                    @endif
-                @endif
-
-                {{-- Module 4 — responsable de service : valider ou renvoyer --}}
-                @if ($courrier->statut === 'en_validation' && $this->peutValider)
-                    <div class="mt-3 space-y-2">
-                        <flux:textarea wire:model="commentaireCirculation" size="sm" rows="2" :label="__('Commentaire (optionnel)')" />
-                        <div class="flex items-center gap-2">
-                            <flux:button size="sm" variant="primary" wire:click="valider">{{ __('Valider') }}</flux:button>
-                            {{-- 2026-10-09 — extension du circuit générique
-                                 (Signature DG / Trésorerie, entretien terrain
-                                 Sinistres) : alternative opt-in à "Valider",
-                                 visible seulement pour qui a le privilège
-                                 courriers.envoyer_signature_dg (assigné par
-                                 département, jamais lié au type de courrier
-                                 dans le code). --}}
-                            @if ($this->peutEnvoyerSignatureDg)
-                                <flux:button size="sm" variant="outline" icon="paper-airplane" wire:click="envoyerSignatureDg">{{ __('Envoyer en signature DG') }}</flux:button>
-                            @endif
-                        </div>
-                        @if ($this->droits['renvoyerCorrection'])
-                            <flux:textarea wire:model="motifRenvoi" size="sm" rows="2" :label="__('Motif du renvoi (si correction nécessaire)')" />
-                            <flux:button size="sm" variant="ghost" wire:click="renvoyerPourCorrection">{{ __('Renvoyer pour correction') }}</flux:button>
-                        @endif
-                    </div>
-                @endif
-
-                {{-- 2026-10-09 — DG : signe et clôture directement, ou signe
-                     et transmet à la trésorerie (courrier de décaissement). --}}
-                @if ($courrier->statut === 'en_attente_signature_dg' && $this->peutSignerDg)
-                    <div class="mt-3 space-y-2">
-                        <flux:textarea wire:model="commentaireCirculation" size="sm" rows="2" :label="__('Commentaire (optionnel)')" />
-                        <div class="flex items-center gap-2">
-                            <flux:button size="sm" variant="primary" icon="identification" wire:click="signerEtCloturer">{{ __('Signer et clôturer') }}</flux:button>
-                            <flux:button size="sm" variant="outline" icon="banknotes" wire:click="signerEtEnvoyerTresorerie">{{ __('Signer et transmettre à la trésorerie') }}</flux:button>
-                        </div>
-                    </div>
-                @elseif ($courrier->statut === 'en_attente_signature_dg')
+                {{-- En attente d'une autre personne : simple information. --}}
+                @if ($courrier->statut === 'en_attente_signature_dg' && ! $this->peutSignerDg)
                     <flux:text class="mt-3 text-sm text-zinc-500">{{ __('En attente de la signature de la DG.') }}</flux:text>
-                @endif
-
-                {{-- 2026-10-09 — Trésorerie : clôture après traitement du décaissement. --}}
-                @if ($courrier->statut === 'en_attente_tresorerie' && $this->peutTraiterTresorerie)
-                    <div class="mt-3 space-y-2">
-                        <flux:textarea wire:model="commentaireCirculation" size="sm" rows="2" :label="__('Commentaire (optionnel)')" />
-                        <flux:button size="sm" variant="primary" icon="banknotes" wire:click="traiterParTresorerie">{{ __('Marquer comme traité') }}</flux:button>
-                    </div>
-                @elseif ($courrier->statut === 'en_attente_tresorerie')
+                @elseif ($courrier->statut === 'en_attente_tresorerie' && ! $this->peutTraiterTresorerie)
                     <flux:text class="mt-3 text-sm text-zinc-500">{{ __('En attente de traitement par la trésorerie.') }}</flux:text>
-                @endif
-
-                {{-- Réaffectation — privilège courriers.reaffecter (2026-09-23), tant qu'un circuit est en cours --}}
-                @if ($this->droits['reaffecter'] && $affectationCourante && in_array($courrier->statut, ['affecte', 'en_traitement', 'en_validation', 'en_attente_information']))
-                    <details class="mt-3">
-                        <summary class="cursor-pointer text-sm text-zinc-500">{{ __('Réaffecter') }}</summary>
-                        <form wire:submit="reaffecter" class="mt-2 space-y-2">
-                            <flux:select wire:model="collaborateurSelectionne" size="sm" :label="__('Nouveau collaborateur')" placeholder="{{ __('Choisir un collaborateur') }}" class="max-w-xs">
-                                @foreach ($this->collaborateursDuService as $c)
-                                    <flux:select.option value="{{ $c['id'] }}">{{ $c['name'] }} — {{ trans_choice(':n en cours|:n en cours', $c['charge'], ['n' => $c['charge']]) }}</flux:select.option>
-                                @endforeach
-                            </flux:select>
-                            <flux:textarea wire:model="motifReaffectation" size="sm" rows="2" :label="__('Motif (obligatoire)')" />
-                            <flux:button size="sm" type="submit">{{ __('Réaffecter') }}</flux:button>
-                        </form>
-                        @error('collaborateurSelectionne') <flux:text class="mt-1 text-sm text-brand-danger">{{ $message }}</flux:text> @enderror
-                    </details>
-                @endif
-
-                {{-- Mise en attente / reprise — collaborateur affecté ou responsable --}}
-                @if ($this->droits['mettreEnAttente'] && in_array($courrier->statut, ['affecte', 'en_traitement', 'en_validation'], true))
-                    <details class="mt-3">
-                        <summary class="cursor-pointer text-sm text-zinc-500">{{ __('Mettre en attente d\'information') }}</summary>
-                        <form wire:submit="mettreEnAttente" class="mt-2 space-y-2">
-                            <flux:textarea wire:model="motifAttente" size="sm" rows="2" :label="__('Motif (obligatoire)')" placeholder="{{ __('Ex. en attente d\'une pièce complémentaire de l\'expéditeur') }}" />
-                            <flux:button size="sm" type="submit">{{ __('Mettre en attente') }}</flux:button>
-                        </form>
-                    </details>
-                @elseif ($this->droits['reprendre'] && $courrier->statut === 'en_attente_information')
-                    <flux:button size="sm" class="mt-3" wire:click="reprendre">{{ __('Reprendre le traitement') }}</flux:button>
-                @endif
-
-                {{-- Rejet — responsable, dérogation tracée --}}
-                @if ($this->droits['rejeter'] && ! in_array($courrier->statut, ['traite', 'archive', 'rejete'], true))
-                    <details class="mt-3">
-                        <summary class="cursor-pointer text-sm text-brand-danger">{{ __('Rejeter ce courrier') }}</summary>
-                        <form wire:submit="rejeter" class="mt-2 space-y-2">
-                            <flux:textarea wire:model="motifRejet" size="sm" rows="2" :label="__('Motif (obligatoire)')" />
-                            <flux:button size="sm" variant="danger" type="submit" wire:confirm="{{ __('Confirmer le rejet de ce courrier ?') }}">{{ __('Rejeter') }}</flux:button>
-                        </form>
-                    </details>
                 @endif
             </div>
 
@@ -1000,6 +956,40 @@
                         </li>
                     @endforeach
                 </ul>
+
+                {{-- 2026-10-30 — journal des consultations (conformité de
+                     l'archivage, courriers.voir_consultations) : qui a ouvert,
+                     téléchargé ou imprimé ce courrier. --}}
+                @if ($this->droits['voirConsultations'])
+                    <flux:separator :text="__('Consultations')" class="mt-8" />
+                    @if ($this->consultations->isEmpty())
+                        <flux:text class="mt-3 text-sm text-zinc-500">{{ __('Aucune consultation enregistrée.') }}</flux:text>
+                    @else
+                        <div class="mt-3 overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
+                                    <tr>
+                                        <th class="whitespace-nowrap py-3 pl-4 pr-3">{{ __('Date') }}</th>
+                                        <th class="py-3 pr-3">{{ __('Personne') }}</th>
+                                        <th class="py-3 pr-4">{{ __('Action') }}</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
+                                    @foreach ($this->consultations as $consultation)
+                                        <tr wire:key="consultation-{{ $consultation->id }}">
+                                            <td class="whitespace-nowrap py-3 pl-4 pr-3 tabular-nums">{{ $consultation->created_at->format('d/m/Y H:i') }}</td>
+                                            <td class="py-3 pr-3">{{ $consultation->utilisateur?->name ?? __('Utilisateur supprimé') }}</td>
+                                            <td class="py-3 pr-4">{{ $consultation->libelle() }}</td>
+                                        </tr>
+                                    @endforeach
+                                </tbody>
+                            </table>
+                        </div>
+                        @if ($this->consultations->count() === 50)
+                            <flux:text class="mt-2 text-xs text-zinc-500">{{ __('Les 50 plus récentes — l\'historique complet est dans Administration › Sécurité & Audit.') }}</flux:text>
+                        @endif
+                    @endif
+                @endif
             </div>
             @endif
         </div>
@@ -1029,8 +1019,14 @@
                 </div>
 
                 <div x-show="!visible" class="p-4">
-                    @if ($courrier->fichier_path)
-                        @php $telechargerUrlFiche = auth()->user()->can('telecharger', $courrier) ? route('courriers.document', $courrier) : null; @endphp
+                    {{-- 2026-10-23 — courrier transféré pas encore accepté par
+                         le service : contenu masqué côté serveur, jamais le vrai
+                         document flouté (voir CourrierPolicy::voirContenu()). --}}
+                    @if ($courrier->fichier_path && ! $this->peutVoirContenu)
+                        <x-apercu.contenu-masque />
+                    @elseif ($courrier->fichier_path)
+                        {{-- 2026-11-09 — aperçu sécurisé : pages filigranées
+                             (route apercus.manifeste), plus le fichier original. --}}
                         {{-- Même motif pdf.js/document-preview.js que "Tous les
                              courriers" et le formulaire d'enregistrement,
                              pointant vers courriers.document.apercu (déjà
@@ -1047,7 +1043,7 @@
                                 zoom: 100,
                                 pageActuelle: 1,
                                 numPages: 1,
-                                url: @js(route('courriers.document.apercu', $courrier)),
+                                url: @js(route('apercus.manifeste', ['courrier', $courrier->id])),
                                 instance() {
                                     const apercu = window.DocumentPreview.obtenir(this.url + ':fiche');
                                     apercu.boite = document.getElementById('apercu-fiche-corps');
@@ -1120,7 +1116,6 @@
                                 variant="panneau"
                                 :nom-fichier="basename($courrier->fichier_path)"
                                 agrandir-evenement="apercu-courrier-agrandi"
-                                :telecharger-url="$telechargerUrlFiche"
                             />
                             <x-apercu.visionneuse id="apercu-fiche" />
                         </div>
@@ -1141,7 +1136,7 @@
                             x-data="{
                                 erreur: null,
                                 zoom: 100,
-                                url: @js(route('courriers.document.apercu', $courrier)),
+                                url: @js(route('apercus.manifeste', ['courrier', $courrier->id])),
                                 pageActuelle: 1,
                                 numPages: 1,
                                 instance() {
@@ -1242,7 +1237,6 @@
                                         variant="modale"
                                         :nom-fichier="basename($courrier->fichier_path)"
                                         :numero-reference="$courrier->numero_reference"
-                                        :telecharger-url="$telechargerUrlFiche"
                                         fermer-modale="apercu-courrier-agrandi"
                                     />
 
@@ -1263,7 +1257,6 @@
                                                 :destinataire="$courrier->destinataire"
                                                 :date="$courrier->date_mouvement"
                                                 :nom-fichier="basename($courrier->fichier_path)"
-                                                :telecharger-url="$telechargerUrlFiche"
                                             />
                                         </div>
                                     </div>
@@ -1297,10 +1290,11 @@
                     <ul class="space-y-2 text-sm">
                         @foreach ($courrier->piecesJointes->take(3) as $pieceJointe)
                             <li class="flex items-center justify-between gap-2">
-                                <span class="truncate">{{ $pieceJointe->nom_original }}</span>
-                                @can('telecharger', $courrier)
-                                    <flux:button size="sm" variant="ghost" icon="arrow-down-tray" :href="route('pieces-jointes.telecharger', $pieceJointe)" :aria-label="__('Télécharger')" />
-                                @endcan
+                                @if ($this->peutVoirContenu)
+                                    <x-apercu.piece-jointe :piece-jointe="$pieceJointe" suffixe="carte" :reference="$courrier->numero_reference" />
+                                @else
+                                    <span class="truncate">{{ $pieceJointe->nom_original }}</span>
+                                @endif
                             </li>
                         @endforeach
                     </ul>
@@ -1334,7 +1328,7 @@
                         </flux:tooltip>
                     @endif
                     @if ($courrier->statut === 'en_attente_de_transfert' && $this->peutTransferer)
-                        <flux:button size="sm" variant="outline" icon="arrow-right-circle" class="w-full" x-on:click="onglet = 'circuit'; $dispatch('modal-show', { name: 'transferer-modal' })">
+                        <flux:button size="sm" variant="outline" icon="arrow-right-circle" class="w-full" x-on:click="$dispatch('modal-show', { name: 'transferer-modal' })">
                             {{ __('Transférer') }}
                         </flux:button>
                     @else
@@ -1511,38 +1505,6 @@
                         <div class="flex justify-end gap-2 border-t border-brand-border pt-4 dark:border-zinc-700">
                             <flux:modal.close><flux:button variant="ghost">{{ __('Annuler') }}</flux:button></flux:modal.close>
                             <flux:button variant="primary" icon="check" wire:click="emettreDecharge">{{ __('Émettre la décharge') }}</flux:button>
-                        </div>
-                    </div>
-                </flux:modal>
-            @endif
-
-            {{-- 2026-10-13, retour utilisateur ("je ne peut pa mettre un
-                 delais") — le bouton "Traiter moi-même" de l'en-tête (plus
-                 haut dans ce fichier) ouvre désormais cette modale plutôt
-                 que d'agir directement : même patron que "Émettre une
-                 décharge" juste au-dessus (déclencheur → ouvrirXxx() →
-                 modale → action réelle), pour que le délai reste réglable
-                 avant de confirmer, préempli avec le SLA par défaut
-                 (ouvrirTraiterMoiMeme()). --}}
-            @if ($this->peutTraiterMoiMeme)
-                <flux:modal name="traiter-moi-meme-modal" class="w-full max-w-sm">
-                    <div class="space-y-4">
-                        <flux:heading size="lg">{{ __('Traiter moi-même') }}</flux:heading>
-                        <flux:text class="text-zinc-500">
-                            {{ __('Ce courrier vous sera affecté et son traitement démarrera immédiatement.') }}
-                        </flux:text>
-
-                        <div class="flex flex-wrap items-end gap-2">
-                            <flux:input type="number" min="1" wire:model="delaiValeur" size="sm" :label="__('Délai de traitement')" class="w-28" />
-                            <flux:select wire:model="delaiUnite" size="sm" :label="__('Unité')" class="w-28">
-                                <flux:select.option value="jours">{{ __('jours') }}</flux:select.option>
-                                <flux:select.option value="heures">{{ __('heures') }}</flux:select.option>
-                            </flux:select>
-                        </div>
-
-                        <div class="flex justify-end gap-2 border-t border-brand-border pt-4 dark:border-zinc-700">
-                            <flux:modal.close><flux:button variant="ghost">{{ __('Annuler') }}</flux:button></flux:modal.close>
-                            <flux:button variant="primary" icon="check" wire:click="traiterMoiMeme">{{ __('Confirmer') }}</flux:button>
                         </div>
                     </div>
                 </flux:modal>

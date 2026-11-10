@@ -23,7 +23,7 @@
             <td>{{ $courrier->sens === 'entrant' ? 'Entrant' : 'Sortant' }}</td>
         </tr>
         <tr>
-            <td class="label">Date de réception / d'envoi</td>
+            <td class="label">Date de réception</td>
             <td>{{ $courrier->date_mouvement->format('d/m/Y') }}</td>
         </tr>
         <tr>

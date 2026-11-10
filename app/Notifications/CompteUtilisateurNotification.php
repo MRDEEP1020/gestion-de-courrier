@@ -2,6 +2,8 @@
 
 namespace App\Notifications;
 
+use App\Concerns\NotificationTempsReel;
+use App\Services\NotificationPreferenceService;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -15,7 +17,7 @@ use Illuminate\Notifications\Notification;
 // pourquoi il ne peut plus se connecter.
 class CompteUtilisateurNotification extends Notification implements ShouldQueue
 {
-    use Queueable;
+    use NotificationTempsReel, Queueable;
 
     public function __construct(
         // 'modifie' (profil/privilège/confidentialité/service) ou
@@ -27,7 +29,7 @@ class CompteUtilisateurNotification extends Notification implements ShouldQueue
 
     public function via(object $notifiable): array
     {
-        return ['mail', 'database'];
+        return app(NotificationPreferenceService::class)->canaux($notifiable, 'comptes');
     }
 
     private function libelle(): string

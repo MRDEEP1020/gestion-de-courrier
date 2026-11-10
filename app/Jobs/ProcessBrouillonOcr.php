@@ -31,6 +31,12 @@ class ProcessBrouillonOcr implements ShouldQueue
     // rendu Ghostscript à 600 dpi et le double passage Tesseract par page.
     public int $timeout = 300;
 
+    // 2026-10-23 — un document scanné joint à un courrier comme document
+    // supplémentaire (PieceJointeService::attacherDepuisBrouillon()) peut
+    // l'être avant même que son OCR démarre : son brouillon n'existe plus,
+    // le texte ne servirait plus à rien — job abandonné sans échec.
+    public $deleteWhenMissingModels = true;
+
     public function __construct(public CourrierBrouillon $brouillon) {}
 
     public function handle(): void

@@ -8,13 +8,16 @@ use App\Models\Courrier;
 use App\Models\CourrierHistorique;
 use App\Models\Profil;
 use App\Models\Service;
+use App\Models\TransfertService;
 use App\Models\User;
+use App\Notifications\CourrierNotification;
 use App\Services\WorkflowService;
 use Illuminate\Broadcasting\BroadcastException;
 use Illuminate\Contracts\Broadcasting\Broadcaster;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
@@ -50,11 +53,7 @@ class WorkflowServiceTest extends TestCase
     // "statut"/"confidentialite" ont un défaut en base (migration), mais un
     // Model::create() ne relit pas les valeurs par défaut du SGBD dans
     // l'instance en mémoire — les expliciter ici évite un $courrier->statut/
-    // confidentialite vide immédiatement après création. "confidentialite"
-    // constaté en écrivant validerService() (2026-09-21, voir
-    // WorkflowService::validerService() — comparaison $confidentialite !==
-    // $courrier->confidentialite déclenchait à tort une trace "modifiée"
-    // pour un courrier déjà réellement 'normale' en base).
+    // confidentialite vide immédiatement après création.
     private function courrier(array $attributs = []): Courrier
     {
         return Courrier::create(array_merge([
@@ -94,6 +93,49 @@ class WorkflowServiceTest extends TestCase
         );
     }
 
+    public function test_le_responsable_ne_recoit_pas_de_notification_pour_ses_propres_actions_de_traitement(): void
+    {
+        Notification::fake();
+
+        $courrier = $this->courrier();
+
+        $this->workflow->affecter($courrier, $this->responsable, $this->responsable);
+        $this->workflow->demarrerTraitement($courrier, $this->responsable);
+        $this->workflow->soumettrePourValidation($courrier, $this->responsable);
+        $this->workflow->valider($courrier, $this->responsable);
+
+        Notification::assertNothingSent();
+    }
+
+    public function test_les_notifications_du_circuit_restent_envoyees_aux_autres_intervenants(): void
+    {
+        Notification::fake();
+
+        $collaborateur = $this->collaborateur();
+        $courrier = $this->courrier();
+
+        $this->workflow->affecter($courrier, $collaborateur, $this->responsable);
+        $this->workflow->demarrerTraitement($courrier, $collaborateur);
+        $this->workflow->soumettrePourValidation($courrier, $collaborateur);
+        $this->workflow->valider($courrier, $this->responsable);
+
+        Notification::assertSentTo(
+            $collaborateur,
+            CourrierNotification::class,
+            fn (CourrierNotification $notification) => $notification->action === 'affectation',
+        );
+        Notification::assertSentTo(
+            $this->responsable,
+            CourrierNotification::class,
+            fn (CourrierNotification $notification) => $notification->action === 'soumis_validation',
+        );
+        Notification::assertSentTo(
+            $collaborateur,
+            CourrierNotification::class,
+            fn (CourrierNotification $notification) => $notification->action === 'validation_acceptee',
+        );
+    }
+
     public function test_un_renvoi_pour_correction_repasse_en_traitement_avec_motif_trace(): void
     {
         $collaborateur = $this->collaborateur();
@@ -127,123 +169,105 @@ class WorkflowServiceTest extends TestCase
         $this->assertSame('Courrier hors périmètre.', CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'rejet')->first()->commentaire);
     }
 
-    // Module 1/4 — la réceptionniste transfère explicitement le courrier à
-    // un destinataire choisi (2026-09-15, voir DECISIONS.md "Destinataires
-    // de transfert").
-    public function test_transferer_fait_passer_le_courrier_en_cours_de_transfert(): void
+    // Module 1/4 (2026-10-23, voir DECISIONS.md "Transfert direct au service
+    // et acceptation") — plus de DGA : l'accueil transfère au service, qui
+    // accepte (décharge numérotée) ou refuse avec motif.
+    private function agent(): User
     {
-        $agent = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'Agent'])->id]);
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
+        return User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'Agent'])->id]);
+    }
+
+    public function test_transferer_au_service_met_le_courrier_en_attente_dacceptation(): void
+    {
+        $agent = $this->agent();
         $courrier = $this->courrier(['statut' => 'en_attente_de_transfert', 'service_id' => null]);
 
-        $this->workflow->transferer($courrier, $dga, $agent);
+        $transfert = $this->workflow->transfererAuService($courrier, $this->service, $agent);
 
         $courrier->refresh();
         $this->assertSame('en_cours_de_transfert', $courrier->statut);
-        $this->assertSame($dga->id, $courrier->destinataire_transfert_id);
+        $this->assertSame($this->service->id, $courrier->service_id);
+        $this->assertSame(TransfertService::EN_ATTENTE, $transfert->statut);
+        $this->assertSame($agent->id, $transfert->transfere_par_id);
         $this->assertSame(
             'transfert',
             CourrierHistorique::where('courrier_id', $courrier->id)->latest('id')->first()->action,
         );
     }
 
-    // Module 1/4 — validation DGA/ADJ du service, demande explicite de
-    // l'utilisateur (2026-09-08).
-
-    public function test_valider_le_service_confirme_le_statut_et_applique_le_service_choisi(): void
+    public function test_transferer_a_un_service_sans_responsable_est_refuse(): void
     {
-        $autreService = Service::factory()->create();
-        $courrier = $this->courrier(['statut' => 'en_cours_de_transfert', 'service_id' => $autreService->id]);
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
+        $courrier = $this->courrier(['statut' => 'en_attente_de_transfert', 'service_id' => null]);
+        $serviceSansResponsable = Service::factory()->create(['responsable_id' => null]);
 
-        $this->workflow->validerService($courrier, $this->service->id, 1, $dga);
+        try {
+            $this->workflow->transfererAuService($courrier, $serviceSansResponsable, $this->agent());
+            $this->fail('Un service sans responsable ne doit jamais recevoir de transfert.');
+        } catch (RuntimeException) {
+            $this->assertSame('en_attente_de_transfert', $courrier->refresh()->statut);
+            $this->assertSame(0, TransfertService::count());
+        }
+    }
+
+    public function test_accepter_le_transfert_attribue_un_numero_de_decharge(): void
+    {
+        $courrier = $this->courrier(['statut' => 'en_attente_de_transfert', 'service_id' => null]);
+        $this->workflow->transfererAuService($courrier, $this->service, $this->agent());
+
+        $transfert = $this->workflow->accepterTransfert($courrier->fresh(), $this->responsable);
+
+        $this->assertSame('enregistre', $courrier->refresh()->statut);
+        $this->assertSame(TransfertService::ACCEPTE, $transfert->statut);
+        $this->assertSame($this->responsable->id, $transfert->decide_par_id);
+        $this->assertSame('ACC-'.now()->year.'-'.str_pad((string) $transfert->id, 6, '0', STR_PAD_LEFT), $transfert->numero_decharge);
+        $this->assertSame(
+            'transfert_accepte',
+            CourrierHistorique::where('courrier_id', $courrier->id)->latest('id')->first()->action,
+        );
+    }
+
+    public function test_refuser_le_transfert_renvoie_le_courrier_a_laccueil_sans_service(): void
+    {
+        $courrier = $this->courrier(['statut' => 'en_attente_de_transfert', 'service_id' => null]);
+        $this->workflow->transfererAuService($courrier, $this->service, $this->agent());
+
+        $transfert = $this->workflow->refuserTransfert($courrier->fresh(), $this->responsable, 'Pas pour notre service.');
 
         $courrier->refresh();
-        $this->assertSame('enregistre', $courrier->statut);
-        $this->assertSame($this->service->id, $courrier->service_id);
+        $this->assertSame('en_attente_de_transfert', $courrier->statut);
+        $this->assertNull($courrier->service_id);
+        $this->assertSame(TransfertService::REFUSE, $transfert->statut);
+        $this->assertSame('Pas pour notre service.', $transfert->motif_refus);
         $this->assertSame(
-            'service_valide_dga',
+            'transfert_refuse',
             CourrierHistorique::where('courrier_id', $courrier->id)->latest('id')->first()->action,
         );
     }
 
-    // 2026-09-21 — demande explicite de l'utilisateur : le niveau de
-    // confidentialité RÉELLEMENT opposable (voir CourrierPolicy::
-    // niveauSuffisant()) n'est plus figé au choix de la réceptionniste —
-    // la DGA peut le confirmer ou le corriger en validant le service.
-    public function test_valider_le_service_applique_le_niveau_de_confidentialite_choisi_par_la_dga(): void
+    // Une décision ne se prend qu'une fois : un second clic (autre onglet,
+    // double soumission) ne doit jamais refuser après coup.
+    public function test_un_transfert_deja_accepte_ne_peut_plus_etre_refuse(): void
     {
-        $courrier = $this->courrier(['statut' => 'en_cours_de_transfert', 'confidentialite' => 1]);
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
+        $courrier = $this->courrier(['statut' => 'en_attente_de_transfert', 'service_id' => null]);
+        $this->workflow->transfererAuService($courrier, $this->service, $this->agent());
+        $this->workflow->accepterTransfert($courrier->fresh(), $this->responsable);
 
-        $this->workflow->validerService($courrier, $this->service->id, 3, $dga);
+        $this->expectException(RuntimeException::class);
 
-        $this->assertSame(3, $courrier->refresh()->confidentialite);
-        $this->assertSame(
-            'confidentialite_modifiee_dga',
-            CourrierHistorique::where('courrier_id', $courrier->id)->latest('id')->first()->action,
-        );
+        $this->workflow->refuserTransfert($courrier->fresh(), $this->responsable, 'Trop tard.');
     }
 
-    // Si la DGA garde le niveau déjà choisi par la réceptionniste, aucune
-    // trace "modifiée" bruyante ne doit apparaître.
-    public function test_valider_le_service_ne_trace_rien_si_le_niveau_de_confidentialite_est_inchange(): void
-    {
-        $courrier = $this->courrier(['statut' => 'en_cours_de_transfert', 'confidentialite' => 2]);
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
-
-        $this->workflow->validerService($courrier, $this->service->id, 2, $dga);
-
-        $this->assertSame(2, $courrier->refresh()->confidentialite);
-        $this->assertFalse(
-            CourrierHistorique::where('courrier_id', $courrier->id)->where('action', 'confidentialite_modifiee_dga')->exists(),
-        );
-    }
-
-    // 2026-09-15 (voir DECISIONS.md, synchronisation SRS-GEC.pdf) : le
-    // service n'est plus saisi par l'agent, `service_id` vaut donc toujours
-    // null avant validation — le libellé "confirmé"/"choisi (différent)"
-    // compare désormais à `service_propose_id` (la suggestion du Module 3),
-    // la seule référence encore pertinente, pas à `service_id`.
-    public function test_valider_le_service_qui_suit_la_proposition_est_trace_comme_confirme(): void
-    {
-        $courrier = $this->courrier(['statut' => 'en_cours_de_transfert', 'service_id' => null, 'service_propose_id' => $this->service->id]);
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
-
-        $this->workflow->validerService($courrier, $this->service->id, 1, $dga);
-
-        $this->assertSame(
-            'Service confirmé par la DGA',
-            CourrierHistorique::where('courrier_id', $courrier->id)->latest('id')->first()->commentaire,
-        );
-    }
-
-    public function test_valider_un_service_different_de_la_proposition_est_trace_differemment(): void
-    {
-        $autreService = Service::factory()->create();
-        $courrier = $this->courrier(['statut' => 'en_cours_de_transfert', 'service_id' => null, 'service_propose_id' => $autreService->id]);
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
-
-        $this->workflow->validerService($courrier, $this->service->id, 1, $dga);
-
-        $this->assertSame(
-            'Service choisi par la DGA (différent de la proposition)',
-            CourrierHistorique::where('courrier_id', $courrier->id)->latest('id')->first()->commentaire,
-        );
-    }
-
-    // Fichiers rangés sous le segment provisoire "_en_attente" (voir
-    // Courrier::segmentClassement()) tant que le service était inconnu —
-    // validerService() doit les déplacer vers le vrai dossier service, tant
-    // le document principal que les pièces jointes, et mettre à jour
-    // fichier_path en conséquence.
-    public function test_valider_le_service_deplace_les_fichiers_hors_du_dossier_dattente(): void
+    // Fichiers rangés sous le segment provisoire "_en_attente" tant que le
+    // service est inconnu : l'ACCEPTATION les déplace vers le dossier du
+    // service (document principal et pièces jointes) — jamais le simple
+    // transfert, qu'un refus pourrait annuler.
+    public function test_accepter_le_transfert_deplace_les_fichiers_hors_du_dossier_dattente(): void
     {
         Storage::fake('s3');
 
         $annee = now()->year;
         $courrier = $this->courrier([
-            'statut' => 'en_cours_de_transfert',
+            'statut' => 'en_attente_de_transfert',
             'service_id' => null,
             'numero_reference' => "GEC-{$annee}-000042",
             'fichier_path' => "courriers/{$annee}/_en_attente/GEC-{$annee}-000042.pdf",
@@ -258,9 +282,10 @@ class WorkflowServiceTest extends TestCase
         ]);
         Storage::disk('s3')->put($pieceJointe->fichier_path, 'contenu de la piece');
 
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
+        $this->workflow->transfererAuService($courrier, $this->service, $this->agent());
+        $this->assertSame("courriers/{$annee}/_en_attente/GEC-{$annee}-000042.pdf", $courrier->refresh()->fichier_path, 'le transfert seul ne déplace rien');
 
-        $this->workflow->validerService($courrier, $this->service->id, 1, $dga);
+        $this->workflow->accepterTransfert($courrier, $this->responsable);
 
         $courrier->refresh();
         $pieceJointe->refresh();
@@ -277,13 +302,13 @@ class WorkflowServiceTest extends TestCase
 
     // Bug réel (2026-09-24, GEC-2026-000003) : fichier déjà dans le dossier
     // du service, fichier_path resté sous _en_attente → aperçu en erreur 500.
-    public function test_valider_le_service_se_recale_sur_un_fichier_deja_deplace(): void
+    public function test_accepter_le_transfert_se_recale_sur_un_fichier_deja_deplace(): void
     {
         Storage::fake('s3');
 
         $annee = now()->year;
         $courrier = $this->courrier([
-            'statut' => 'en_cours_de_transfert',
+            'statut' => 'en_attente_de_transfert',
             'service_id' => null,
             'numero_reference' => "GEC-{$annee}-000043",
             'fichier_path' => "courriers/{$annee}/_en_attente/GEC-{$annee}-000043.pdf",
@@ -291,8 +316,8 @@ class WorkflowServiceTest extends TestCase
         $cheminAttendu = "courriers/{$annee}/{$this->service->code}/GEC-{$annee}-000043.pdf";
         Storage::disk('s3')->put($cheminAttendu, 'déjà déplacé');
 
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
-        $this->workflow->validerService($courrier, $this->service->id, 1, $dga);
+        $this->workflow->transfererAuService($courrier, $this->service, $this->agent());
+        $this->workflow->accepterTransfert($courrier->fresh(), $this->responsable);
 
         $this->assertSame($cheminAttendu, $courrier->refresh()->fichier_path);
     }
@@ -310,17 +335,41 @@ class WorkflowServiceTest extends TestCase
 
         $annee = now()->year;
         $courrier = $this->courrier([
-            'statut' => 'en_cours_de_transfert',
+            'statut' => 'en_attente_de_transfert',
             'service_id' => null,
             'numero_reference' => "GEC-{$annee}-000044",
             'fichier_path' => "courriers/{$annee}/_en_attente/GEC-{$annee}-000044.pdf",
         ]);
         Storage::disk('s3')->put($courrier->fichier_path, 'contenu du scan');
 
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
-        $this->workflow->validerService($courrier, $this->service->id, 1, $dga);
+        $this->workflow->transfererAuService($courrier, $this->service, $this->agent());
+        $this->workflow->accepterTransfert($courrier->fresh(), $this->responsable);
 
         $cheminAttendu = "courriers/{$annee}/{$this->service->code}/GEC-{$annee}-000044.pdf";
+        $this->assertSame($cheminAttendu, $courrier->refresh()->fichier_path);
+        Storage::disk('s3')->assertExists($cheminAttendu);
+    }
+
+    // Un fichier déjà rangé sous le dossier d'un AUTRE service (re-numérisé
+    // pendant un transfert ensuite refusé) rejoint aussi le service qui
+    // accepte — plus seulement depuis "_en_attente" (Règle n°4).
+    public function test_accepter_le_transfert_deplace_un_fichier_range_sous_un_autre_service(): void
+    {
+        Storage::fake('s3');
+
+        $annee = now()->year;
+        $courrier = $this->courrier([
+            'statut' => 'en_attente_de_transfert',
+            'service_id' => null,
+            'numero_reference' => "GEC-{$annee}-000045",
+            'fichier_path' => "courriers/{$annee}/AUT/GEC-{$annee}-000045.pdf",
+        ]);
+        Storage::disk('s3')->put($courrier->fichier_path, 'contenu du scan');
+
+        $this->workflow->transfererAuService($courrier, $this->service, $this->agent());
+        $this->workflow->accepterTransfert($courrier->fresh(), $this->responsable);
+
+        $cheminAttendu = "courriers/{$annee}/{$this->service->code}/GEC-{$annee}-000045.pdf";
         $this->assertSame($cheminAttendu, $courrier->refresh()->fichier_path);
         Storage::disk('s3')->assertExists($cheminAttendu);
     }
@@ -363,7 +412,7 @@ class WorkflowServiceTest extends TestCase
             'enregistré → valider (pas encore affecté)' => ['enregistre', 'valider'],
             'en_traitement → reprendre (pas en attente)' => ['en_traitement', 'reprendre'],
             'en_attente_de_transfert → démarrer traitement (pas encore transféré)' => ['en_attente_de_transfert', 'demarrerTraitement'],
-            'en_cours_de_transfert → démarrer traitement (service pas encore validé)' => ['en_cours_de_transfert', 'demarrerTraitement'],
+            'en_cours_de_transfert → démarrer traitement (pas encore accepté)' => ['en_cours_de_transfert', 'demarrerTraitement'],
         ];
     }
 
@@ -394,28 +443,16 @@ class WorkflowServiceTest extends TestCase
         Event::assertDispatchedTimes(CourrierStatutChange::class, 4);
     }
 
-    public function test_transferer_diffuse_courrierstatutchange(): void
+    public function test_transferer_et_accepter_diffusent_courrierstatutchange(): void
     {
         Event::fake([CourrierStatutChange::class]);
 
-        $agent = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'Agent'])->id]);
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
         $courrier = $this->courrier(['statut' => 'en_attente_de_transfert', 'service_id' => null]);
 
-        $this->workflow->transferer($courrier, $dga, $agent);
-
+        $this->workflow->transfererAuService($courrier, $this->service, $this->agent());
         Event::assertDispatched(fn (CourrierStatutChange $e) => $e->courrierId === $courrier->id && $e->statut === 'en_cours_de_transfert');
-    }
 
-    public function test_valider_le_service_diffuse_courrierstatutchange(): void
-    {
-        Event::fake([CourrierStatutChange::class]);
-
-        $courrier = $this->courrier(['statut' => 'en_cours_de_transfert', 'service_id' => null]);
-        $dga = User::factory()->create(['profil_id' => Profil::firstOrCreate(['nom' => 'DGA'])->id]);
-
-        $this->workflow->validerService($courrier, $this->service->id, 1, $dga);
-
+        $this->workflow->accepterTransfert($courrier->fresh(), $this->responsable);
         Event::assertDispatched(fn (CourrierStatutChange $e) => $e->courrierId === $courrier->id && $e->statut === 'enregistre');
     }
 

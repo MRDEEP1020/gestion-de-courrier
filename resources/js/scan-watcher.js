@@ -16,6 +16,12 @@ const EXTENSIONS_ACCEPTEES = ['pdf', 'jpg', 'jpeg', 'png', 'tif', 'tiff'];
 // ce filtre n'est qu'une aide pour ignorer le bruit évident (.ds_store,
 // fichiers temporaires du scanner, etc.).
 
+// 2026-11-09 (voir DECISIONS.md « Scans conservés et rangés sur le poste de
+// numérisation ») : sous-dossier où chaque scan enregistré est rangé, dans
+// le dossier surveillé lui-même. listerEntrees() ne lit que le premier
+// niveau : un fichier rangé n'est jamais réimporté.
+const DOSSIER_RANGEMENT = 'Courriers enregistrés';
+
 const DB_NOM = 'gec-scan-watcher';
 const DB_VERSION = 1;
 const STORE_DOSSIER = 'dossier';
@@ -93,6 +99,22 @@ async function oublierDossier(db) {
 // rien que les autres onglets auraient besoin de resynchroniser.
 async function viderFichiersTraites(db) {
     await demande(transaction(db, STORE_FICHIERS, 'readwrite').clear());
+}
+
+// 2026-10-30 (« can we have the option to choose which too ») — même
+// principe que viderFichiersTraites(), limité aux fichiers cochés sur la
+// page Administration › Dossier surveillé : liste du suivi (le plus récent
+// d'abord), puis oubli des seules clés choisies.
+async function listerFichiersTraites(db) {
+    const tous = await demande(transaction(db, STORE_FICHIERS, 'readonly').getAll());
+
+    return tous.sort((a, b) => b.traiteLe - a.traiteLe);
+}
+
+async function oublierFichiersTraites(db, cles) {
+    const store = transaction(db, STORE_FICHIERS, 'readwrite');
+
+    await Promise.all(cles.map((cle) => demande(store.delete(cle))));
 }
 
 // 2026-09-24 (voir DECISIONS.md "Dossier surveillé : configuration dans
@@ -297,13 +319,81 @@ function creerBrouillon(wireId) {
     });
 }
 
+// Premier nom libre dans `dossier` : « base.ext », sinon « base (2).ext »…
+async function nomLibre(dossier, base, extension) {
+    for (let n = 1; ; n++) {
+        const nom = n === 1 ? `${base}.${extension}` : `${base} (${n}).${extension}`;
+
+        try {
+            await dossier.getFileHandle(nom);
+        } catch (erreur) {
+            if (erreur.name === 'NotFoundError') {
+                return nom;
+            }
+
+            throw erreur;
+        }
+    }
+}
+
+// Range un scan déjà enregistré comme courrier (2026-11-09) :
+// « Courriers enregistrés/{année}/{mois}/{référence}.{ext} » (pièce jointe :
+// « {référence}-annexe-{n° de scan} »). Copie puis vérification de la
+// taille AVANT de supprimer l'original — jamais un scan perdu en route
+// (FileSystemFileHandle.move() n'est pas garanti hors du stockage privé du
+// navigateur). Refuse de toucher un fichier qui n'est plus celui importé
+// (même nom, autre contenu).
+async function rangerFichier(dossier, entree, info) {
+    let source;
+
+    try {
+        source = await dossier.getFileHandle(entree.nom);
+    } catch {
+        return { range: false, raison: 'introuvable' };
+    }
+
+    const fichier = await source.getFile();
+
+    if (cleFichier(fichier) !== entree.cle) {
+        return { range: false, raison: 'modifie' };
+    }
+
+    let cible = await dossier.getDirectoryHandle(DOSSIER_RANGEMENT, { create: true });
+
+    for (const segment of [info.annee, info.mois]) {
+        cible = await cible.getDirectoryHandle(segment, { create: true });
+    }
+
+    const extension = entree.nom.split('.').pop()?.toLowerCase() || 'pdf';
+    const base = info.piece ? `${info.reference}-annexe-${info.brouillonId}` : info.reference;
+    const nom = await nomLibre(cible, base, extension);
+    const copie = await cible.getFileHandle(nom, { create: true });
+    const ecriture = await copie.createWritable();
+
+    await ecriture.write(fichier);
+    await ecriture.close();
+
+    if ((await copie.getFile()).size !== fichier.size) {
+        await cible.removeEntry(nom);
+
+        throw new Error(`Copie incomplète de ${entree.nom}`);
+    }
+
+    await dossier.removeEntry(entree.nom);
+
+    return { range: true, chemin: `${DOSSIER_RANGEMENT}/${info.annee}/${info.mois}/${nom}` };
+}
+
 window.ScanWatcher = {
     estPriseEnCharge,
+    rangerFichier,
     ouvrirDB,
     dossierEnregistre,
     enregistrerDossier,
     oublierDossier,
     viderFichiersTraites,
+    listerFichiersTraites,
+    oublierFichiersTraites,
     estActif,
     definirActif,
     surChangement,
@@ -322,7 +412,15 @@ window.ScanWatcher = {
 // incompatible avec un attribut HTML x-data lui-même délimité par des
 // guillemets doubles. Les traductions arrivent donc en attributs data-*
 // (échappement HTML normal, aucun conflit), lus une fois dans init().
-document.addEventListener('alpine:init', () => {
+// 2026-10-30 — bug réel (capture : carte « Configuration sur ce poste »
+// vide) : enregistré seulement sur 'alpine:init', qui ne se déclenche qu'au
+// chargement complet d'une page. Arrivé par la barre latérale
+// (wire:navigate), ce script se charge APRÈS le démarrage d'Alpine : le
+// composant n'était jamais enregistré, ni sur Administration › Dossier
+// surveillé ni sur Numérisation / Nouveau courrier (import automatique
+// arrêté sans erreur visible). Enregistré tout de suite si Alpine tourne
+// déjà (voir la fin du fichier).
+const enregistrerSurveillanceDossier = () => {
     window.Alpine.data('surveillanceDossier', () => ({
         // Deux modes (2026-09-24, voir DECISIONS.md "Dossier surveillé :
         // configuration dans l'administration"), lus sur data-mode :
@@ -352,11 +450,22 @@ document.addEventListener('alpine:init', () => {
         // 2026-10-08 — confirmation après reinitialiserFichiersTraites(),
         // distincte de messageErreur (pas une erreur).
         messageConfirmation: '',
+        // 2026-10-30 — mode config : fichiers déjà traités de ce poste, et
+        // clés cochées pour les rendre importables à nouveau.
+        fichiersTraites: [],
+        selectionFichiers: [],
         messages: {},
         intervalId: null,
         desabonner: null,
         enCoursDeTraitement: false,
         tailleVues: {},
+        // 2026-11-09 — rangement des scans enregistrés sur ce poste :
+        // null (pas encore vérifié) | 'actif' | 'a_autoriser' (écriture
+        // dans le dossier pas encore accordée par Chrome).
+        rangement: null,
+        rangementEnCours: false,
+        totalRanges: 0,
+        surEnregistrement: null,
         // Id Livewire stable du composant (this.$wire.$id), capturé une
         // seule fois ici pendant que $wire est fiable — voir creerBrouillon()
         // dans scan-watcher.js pour pourquoi on ne réaccède plus jamais à
@@ -384,6 +493,13 @@ document.addEventListener('alpine:init', () => {
             // Configuration changée dans un autre onglet (page
             // d'administration) : appliquée ici sans rechargement.
             this.desabonner = window.ScanWatcher.surChangement(() => this.charger());
+
+            // 2026-11-09 — un courrier vient d'être enregistré (évènement
+            // Livewire de RegistrationForm) : son scan est rangé sur le poste.
+            if (this.mode === 'execution') {
+                this.surEnregistrement = () => this.rangerScans();
+                window.addEventListener('courrier-enregistre', this.surEnregistrement);
+            }
         },
 
         // Navigation wire:navigate : le composant est détruit mais un
@@ -391,6 +507,10 @@ document.addEventListener('alpine:init', () => {
         destroy() {
             this.arreterBoucle();
             this.desabonner?.();
+
+            if (this.surEnregistrement) {
+                window.removeEventListener('courrier-enregistre', this.surEnregistrement);
+            }
         },
 
         // (Re)lit la configuration de CE poste et en déduit l'état affiché —
@@ -407,6 +527,7 @@ document.addEventListener('alpine:init', () => {
             if (this.mode === 'config') {
                 this.permission = this.handle ? await this.handle.queryPermission({ mode: 'read' }) : null;
                 this.etat = this.handle ? 'configure' : 'a_choisir';
+                await this.chargerFichiersTraites();
 
                 return;
             }
@@ -437,7 +558,9 @@ document.addEventListener('alpine:init', () => {
 
         async choisirDossier() {
             try {
-                const handle = await window.showDirectoryPicker({ mode: 'read' });
+                // Lecture ET écriture (2026-11-09) : l'écriture sert au
+                // rangement des scans enregistrés sur ce poste.
+                const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
 
                 await window.ScanWatcher.enregistrerDossier(this.db, handle);
                 await this.charger();
@@ -476,16 +599,50 @@ document.addEventListener('alpine:init', () => {
         // après une action qui le rend obsolète (ex. changer de dossier).
         async reinitialiserFichiersTraites() {
             await window.ScanWatcher.viderFichiersTraites(this.db);
+            await this.chargerFichiersTraites();
             this.messageConfirmation = this.messages.msgFichiersReinitialises;
         },
 
+        // 2026-10-30 — choisir les fichiers à rendre importables (voir
+        // listerFichiersTraites()/oublierFichiersTraites() ci-dessus).
+        async chargerFichiersTraites() {
+            this.fichiersTraites = this.db ? await window.ScanWatcher.listerFichiersTraites(this.db) : [];
+            this.selectionFichiers = [];
+        },
+
+        toutSelectionner(coche) {
+            this.selectionFichiers = coche ? this.fichiersTraites.map((f) => f.cle) : [];
+        },
+
+        async reimporterSelection() {
+            const nombre = this.selectionFichiers.length;
+
+            if (nombre === 0) {
+                return;
+            }
+
+            await window.ScanWatcher.oublierFichiersTraites(this.db, this.selectionFichiers);
+            await this.chargerFichiersTraites();
+            this.messageConfirmation = this.messages.msgSelectionReinitialisee.replace(':n', nombre);
+        },
+
+        dateTraitement(horodatage) {
+            return new Date(horodatage).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        },
+
         // requestPermission() exige un vrai geste utilisateur : toujours
-        // appelée depuis un clic.
+        // appelée depuis un clic. Lecture et écriture en une seule demande
+        // (2026-11-09, rangement des scans) ; refusée, la lecture seule
+        // suffit encore à l'import.
         async autoriserAcces() {
-            let permission = await this.handle.queryPermission({ mode: 'read' });
+            let permission = await this.handle.queryPermission({ mode: 'readwrite' });
 
             if (permission !== 'granted') {
-                permission = await this.handle.requestPermission({ mode: 'read' });
+                permission = await this.handle.requestPermission({ mode: 'readwrite' });
+            }
+
+            if (permission !== 'granted') {
+                permission = await this.handle.queryPermission({ mode: 'read' });
             }
 
             this.permission = permission;
@@ -518,6 +675,80 @@ document.addEventListener('alpine:init', () => {
             this.etat = 'en_surveillance';
             this.cycleDeSurveillance();
             this.intervalId = setInterval(() => this.cycleDeSurveillance(), 4000);
+            // Rattrapage : scans enregistrés depuis le dernier passage (y
+            // compris par un collègue, sur un autre poste).
+            this.rangerScans();
+        },
+
+        // ===== Rangement des scans enregistrés (2026-11-09) =====
+
+        // Demande au serveur quel courrier chaque scan importé par ce poste
+        // est devenu (App\Concerns\RangementScansLocaux), puis range les
+        // fichiers correspondants. Jamais en boucle : au démarrage de
+        // l'import et après chaque enregistrement.
+        async rangerScans() {
+            if (this.mode !== 'execution' || !this.handle || this.rangementEnCours) {
+                return;
+            }
+
+            const permission = await this.handle.queryPermission({ mode: 'readwrite' });
+            this.rangement = permission === 'granted' ? 'actif' : 'a_autoriser';
+
+            if (permission !== 'granted') {
+                return;
+            }
+
+            this.rangementEnCours = true;
+
+            try {
+                const enAttente = (await window.ScanWatcher.listerFichiersTraites(this.db))
+                    .filter((entree) => entree.brouillonId && !entree.rangeLe);
+
+                if (!enAttente.length) {
+                    return;
+                }
+
+                const wire = window.Livewire.find(this.wireId);
+                const infos = wire ? await wire.infosRangement(enAttente.map((entree) => entree.brouillonId)) : [];
+
+                for (const info of infos ?? []) {
+                    const entree = enAttente.find((e) => e.brouillonId === info.brouillonId);
+
+                    if (!entree) {
+                        continue;
+                    }
+
+                    const resultat = await window.ScanWatcher.rangerFichier(this.handle, entree, info);
+
+                    // Marqué dans tous les cas (rangé, introuvable, remplacé)
+                    // pour ne jamais retenter indéfiniment.
+                    await window.ScanWatcher.marquerFichierTraite(this.db, {
+                        ...entree,
+                        rangeLe: Date.now(),
+                        rangeVers: resultat.chemin ?? null,
+                        raisonRangement: resultat.raison ?? null,
+                    });
+
+                    if (resultat.range) {
+                        this.totalRanges++;
+                    }
+                }
+            } catch (erreur) {
+                console.error('[scan-watcher] rangement des scans', erreur);
+            } finally {
+                this.rangementEnCours = false;
+            }
+        },
+
+        // Clic de la réceptionniste : Chrome demande l'autorisation de
+        // modifier les fichiers du dossier.
+        async autoriserRangement() {
+            const permission = await this.handle.requestPermission({ mode: 'readwrite' });
+            this.rangement = permission === 'granted' ? 'actif' : 'a_autoriser';
+
+            if (permission === 'granted') {
+                await this.rangerScans();
+            }
         },
 
         arreterBoucle() {
@@ -690,4 +921,10 @@ document.addEventListener('alpine:init', () => {
             this.majJournal(fichier.name, 'erreur_temporaire', this.messages.msgErreurTemporaire);
         },
     }));
-});
+};
+
+if (window.Alpine) {
+    enregistrerSurveillanceDossier();
+} else {
+    document.addEventListener('alpine:init', enregistrerSurveillanceDossier);
+}

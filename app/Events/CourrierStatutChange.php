@@ -13,7 +13,7 @@ use Illuminate\Queue\SerializesModels;
 // OcrTermine/ClassementPropose (Règle n°1, canal privé par courrier
 // contrôlé par CourrierPolicy::view, voir routes/channels.php), diffusé
 // depuis WorkflowService à chaque transition de statut réelle (affecter/
-// transferer/validerService/transitionnerSimple), pour que la fiche
+// transfert/acceptation/refus/transitionnerSimple), pour que la fiche
 // ouverte dans un AUTRE onglet/session se mette à jour sans rechargement
 // manuel.
 class CourrierStatutChange implements ShouldBroadcastNow

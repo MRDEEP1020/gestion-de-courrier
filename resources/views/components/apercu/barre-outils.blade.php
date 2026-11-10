@@ -21,7 +21,6 @@
     'variant' => 'panneau', // 'panneau' (panneau latéral compact) | 'modale' (grande vue "Agrandir")
     'nomFichier' => null,
     'numeroReference' => null,
-    'telechargerUrl' => null,
     'agrandirEvenement' => null, // nom de modale à ouvrir (bouton d'agrandissement) — variant panneau
     'fermerModale' => null,      // variant modale uniquement (bouton de fermeture)
 ])
@@ -62,21 +61,15 @@
             <span class="w-10 text-center text-xs text-[#616161] dark:text-zinc-400" x-text="zoom + '%'"></span>
             <flux:button size="sm" variant="ghost" icon="plus" x-on:click="zoomIn()" :aria-label="__('Zoom +')" />
 
-            <span class="mx-1 h-4 w-px bg-[#e1e1e1] dark:bg-zinc-700"></span>
-            {{-- "Imprimer" ouvre l'URL d'aperçu (déjà dans le x-data parent
-                 sous `url`, servie en Content-Disposition: inline par
-                 CourrierDocumentApercuController/BrouillonDocumentApercuController)
-                 dans un nouvel onglet : le visualiseur PDF natif du
-                 navigateur y expose sa propre action d'impression — pas de
-                 nouvelle route, pas de window.print() hasardeux sur un
-                 document pas encore chargé dans l'onglet cible. --}}
-            <flux:button size="sm" variant="ghost" icon="printer" x-on:click="window.open(url, '_blank')" :aria-label="__('Imprimer')" />
-
-            @if ($telechargerUrl)
-                <flux:button size="sm" variant="ghost" icon="arrow-down-tray" :href="$telechargerUrl" :aria-label="__('Télécharger')" />
-            @endif
-
+            {{-- Boutons « Imprimer » et « Télécharger » retirés le 2026-11-09 :
+                 un document scanné se consulte, il ne s'imprime ni ne se
+                 télécharge (voir DECISIONS.md « Fichiers : chiffrement, aperçu
+                 sécurisé, aucun téléchargement »). L'ancien « Imprimer »
+                 ouvrait le PDF original dans un onglet, où le navigateur
+                 proposait de l'enregistrer. --}}
             @if ($agrandirEvenement)
+                <span class="mx-1 h-4 w-px bg-[#e1e1e1] dark:bg-zinc-700"></span>
+
                 <flux:button size="sm" variant="ghost" icon="arrows-pointing-out" x-on:click="$dispatch('modal-show', { name: '{{ $agrandirEvenement }}' })" :aria-label="__('Voir en plein écran')" />
             @endif
 

@@ -2,9 +2,19 @@
 
 use App\Http\Middleware\SetLocale;
 use App\Jobs\ArchiverCourriersTraitesJob;
+use App\Jobs\CalculerOccupationStockageJob;
+use App\Models\OccupationStockage;
+use App\Jobs\ConvertirArchivesPdfaJob;
+use App\Jobs\PreparerApercusManquantsJob;
+use App\Jobs\RecalculerConservationJob;
 use App\Jobs\RefreshDashboardStatsJob;
+use App\Jobs\RefreshStatistiquesJob;
 use App\Jobs\SendMailAlertJob;
+use App\Jobs\VerifierIntegriteFichiersJob;
+use App\Services\EtatSysteme;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -47,6 +57,82 @@ return Application::configure(basePath: dirname(__DIR__))
             ->everyFifteenMinutes()
             ->name('statistiques-tableau-de-bord')
             ->withoutOverlapping();
+
+        // Module 10 étendu (2026-10-30) — cubes de la page « Dashboard statistiques ».
+        $schedule->job(new RefreshStatistiquesJob)
+            ->everyFifteenMinutes()
+            ->name('statistiques-page')
+            ->withoutOverlapping();
+
+        // Module 9 — conformité de l'archivage (2026-10-30, voir DECISIONS.md) :
+        // intégrité des fichiers chaque nuit, échéances de conservation chaque
+        // nuit, rattrapage des copies PDF/A chaque heure.
+        $schedule->job(new VerifierIntegriteFichiersJob)
+            ->dailyAt('02:00')
+            ->name('integrite-fichiers')
+            ->withoutOverlapping();
+
+        $schedule->job(new RecalculerConservationJob)
+            ->dailyAt('03:00')
+            ->name('conservation-archives')
+            ->withoutOverlapping();
+
+        // Rattrapage (2026-11-09) : une tâche de nuit manquée (machine éteinte
+        // à 02:00/03:00) n'est jamais rejouée par le planificateur — constaté
+        // du 30/10 au 05/11 sur le poste de développement. Si le dernier
+        // passage date de plus de 26 h (ou n'a jamais eu lieu), elle repart à
+        // la demi-heure suivante ; sur un serveur allumé la nuit, la
+        // condition n'est jamais vraie. À la demi-heure pour ne jamais tomber
+        // en même temps que 02:00/03:00.
+        $enRetard = fn (string $cle) => fn () => ($dernier = Cache::get($cle)) === null
+            || Carbon::parse($dernier)->lt(now()->subHours(26));
+
+        $schedule->job(new VerifierIntegriteFichiersJob)
+            ->hourlyAt(30)
+            ->when($enRetard(VerifierIntegriteFichiersJob::CLE_DERNIERE_VERIFICATION))
+            ->name('integrite-fichiers-rattrapage')
+            ->withoutOverlapping();
+
+        $schedule->job(new RecalculerConservationJob)
+            ->hourlyAt(30)
+            ->when($enRetard(RecalculerConservationJob::CLE_DERNIER_PASSAGE))
+            ->name('conservation-archives-rattrapage')
+            ->withoutOverlapping();
+
+        $schedule->job(new ConvertirArchivesPdfaJob)
+            ->hourly()
+            ->name('archives-pdfa')
+            ->withoutOverlapping();
+
+        // 2026-11-09 — occupation du stockage (Sécurité & Audit › Stockage) :
+        // chaque nuit, avec le même rattrapage que les tâches ci-dessus.
+        $schedule->job(new CalculerOccupationStockageJob)
+            ->dailyAt('04:00')
+            ->name('occupation-stockage')
+            ->withoutOverlapping();
+
+        $schedule->job(new CalculerOccupationStockageJob)
+            ->hourlyAt(45)
+            ->when(fn () => ! OccupationStockage::where('calcule_le', '>', now()->subHours(26))->exists())
+            ->name('occupation-stockage-rattrapage')
+            ->withoutOverlapping();
+
+        // 2026-11-09 — pages de l'aperçu sécurisé des documents antérieurs
+        // (voir App\Services\ApercuSecurise), par lots.
+        $schedule->job(new PreparerApercusManquantsJob)
+            ->hourlyAt(15)
+            ->when(fn () => (bool) config('services.archivage.apercu_auto'))
+            ->name('apercus-securises')
+            ->withoutOverlapping();
+
+        // Battement du planificateur (2026-10-30) : s'il cesse (aucun
+        // schedule:run / schedule:work), alertes, archivage et statistiques
+        // s'arrêtent sans erreur visible — constaté du 20 au 30/10. Sécurité
+        // & Audit et un bandeau administrateur le signalent (voir
+        // App\Services\EtatSysteme).
+        $schedule->call(fn () => Cache::forever(EtatSysteme::CLE_BATTEMENT, now()->toIso8601String()))
+            ->everyMinute()
+            ->name('battement-planificateur');
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

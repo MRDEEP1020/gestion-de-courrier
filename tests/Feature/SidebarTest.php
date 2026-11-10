@@ -67,7 +67,8 @@ class SidebarTest extends TestCase
 
         $html = $this->get(route('admin.utilisateurs'))->getContent();
 
-        $this->assertStringContainsString('open', $this->blocDisclosure($html, 'Administration'));
+        // Groupe renommé « Configuration » le 2026-11-04.
+        $this->assertStringContainsString('open', $this->blocDisclosure($html, 'Configuration'));
     }
 
     public function test_le_groupe_administration_est_replie_sur_le_tableau_de_bord(): void
@@ -76,7 +77,7 @@ class SidebarTest extends TestCase
 
         $html = $this->get(route('dashboard'))->getContent();
 
-        $this->assertStringNotContainsString('open', $this->blocDisclosure($html, 'Administration'));
+        $this->assertStringNotContainsString('open', $this->blocDisclosure($html, 'Configuration'));
     }
 
     // Module 3/9 — "Dossiers & Archives" (2026-09-21) : les 3 placeholders

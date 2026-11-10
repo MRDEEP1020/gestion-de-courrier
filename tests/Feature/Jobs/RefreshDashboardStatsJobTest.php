@@ -89,8 +89,9 @@ class RefreshDashboardStatsJobTest extends TestCase
             'service_id' => $service->id,
             'statut' => 'traite',
         ]);
-        CourrierHistorique::create(['courrier_id' => $courrierHorsPeriodeParDefaut->id, 'auteur_id' => null, 'action' => 'validation_acceptee'])
-            ->forceFill(['created_at' => now()->subDays(100)])->save();
+        // Datée dès sa création : l'historique est en écriture seule
+        // (EcritureSeule, 2026-10-30), une entrée existante ne se modifie plus.
+        CourrierHistorique::forceCreate(['courrier_id' => $courrierHorsPeriodeParDefaut->id, 'auteur_id' => null, 'action' => 'validation_acceptee', 'created_at' => now()->subDays(100)]);
 
         app()->call([new RefreshDashboardStatsJob, 'handle']);
         $stats = Cache::get(RefreshDashboardStatsJob::CLE_CACHE);

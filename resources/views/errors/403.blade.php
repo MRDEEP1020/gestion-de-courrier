@@ -30,8 +30,27 @@
         \Illuminate\Support\Facades\View::share('errors', new \Illuminate\Support\ViewErrorBag);
     }
 @endphp
+{{-- 2026-10-27 — visiteur non connecté (session expirée, ou requête de fond
+     comme l'autorisation d'un canal temps réel /broadcasting/auth venant d'un
+     onglet déconnecté) : la sidebar suppose un utilisateur connecté et
+     plantait en 500 (« hasPrivilege() on null ») au lieu de répondre 403. --}}
+@guest
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+    <head>
+        @include('partials.head', ['title' => __('Accès refusé')])
+    </head>
+    <body class="flex min-h-screen items-center justify-center bg-brand-surface px-4 antialiased">
+        <div class="flex max-w-md flex-col items-center gap-4 text-center">
+            <flux:heading level="1" size="xl">{{ __('Vous n\'avez pas accès à cette page') }}</flux:heading>
+            <flux:text>{{ __('Votre session a peut-être expiré. Reconnectez-vous pour continuer.') }}</flux:text>
+            <flux:button variant="primary" :href="route('login')">{{ __('Se connecter') }}</flux:button>
+        </div>
+    </body>
+</html>
+@else
 <x-layouts::app.sidebar :title="__('Accès refusé')">
-    <flux:main class="bg-brand-surface">
+    <flux:main class="bg-brand-surface dark:bg-zinc-800">
         <div class="mx-auto flex max-w-2xl flex-col items-center gap-6 px-4 py-16 text-center">
             <div class="flex size-16 items-center justify-center rounded-full bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400">
                 <flux:icon.lock-closed class="size-8" />
@@ -78,3 +97,4 @@
         </div>
     </flux:main>
 </x-layouts::app.sidebar>
+@endguest
