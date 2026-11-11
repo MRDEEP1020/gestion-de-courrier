@@ -326,7 +326,47 @@
         @php
             $stockage = $this->stockage;
             $dernier = $stockage['dernier'];
+            $copiePc = $this->sauvegardeLocale;
         @endphp
+
+        {{-- 2026-11-11 (« je les veux aussi dans le pc … si un jour l'appli
+             crash on pourra récupérer les doc ») — copie de secours rangée
+             par dossier, ZIP chiffrés (App\Services\SauvegardeLocale). --}}
+        <div class="{{ $carte }} mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div class="flex min-w-0 items-start gap-3">
+                <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-brand-accent/10 text-brand-accent">
+                    <flux:icon.computer-desktop class="size-5" />
+                </div>
+                <div class="min-w-0 space-y-1">
+                    <flux:heading level="2">{{ __('Copie de secours sur le PC, rangée par dossier') }}</flux:heading>
+                    @if (! $copiePc['active'])
+                        <flux:text class="text-sm">{{ __('Désactivée : renseigner GEC_SAUVEGARDE_DOSSIER (dossier du PC) et GEC_SAUVEGARDE_MOT_DE_PASSE dans le fichier .env.') }}</flux:text>
+                    @else
+                        <flux:text class="break-all text-sm">{{ $copiePc['dossier'] }}</flux:text>
+                        @if ($copiePc['le'])
+                            <flux:text class="text-sm">
+                                {{ __('Mise à jour le :quand — :n courrier(s) copiés ou à jour.', ['quand' => $copiePc['le']->format('d/m/Y à H:i'), 'n' => $copiePc['etat']['ecrits'] + $copiePc['etat']['deplaces'] + $copiePc['etat']['inchanges']]) }}
+                            </flux:text>
+                            <flux:text class="text-sm">
+                                {{ trans_choice(':n copie personnelle (mot de passe de sauvegarde de chaque personne)|:n copies personnelles (mot de passe de sauvegarde de chaque personne)', $copiePc['etat']['personnes'] ?? 0, ['n' => $copiePc['etat']['personnes'] ?? 0]) }}
+                            </flux:text>
+                            @if ($copiePc['etat']['erreurs'] > 0)
+                                <flux:text class="flex items-center gap-1 text-sm font-medium text-brand-warning-dark">
+                                    <flux:icon.exclamation-triangle variant="micro" class="size-4" />
+                                    {{ trans_choice(':n courrier non copié (voir le journal)|:n courriers non copiés (voir le journal)', $copiePc['etat']['erreurs'], ['n' => $copiePc['etat']['erreurs']]) }}
+                                </flux:text>
+                            @endif
+                        @else
+                            <flux:text class="text-sm">{{ __('Première copie au prochain passage (chaque heure).') }}</flux:text>
+                        @endif
+                        <flux:text class="text-xs text-zinc-500">{{ __('Un ZIP protégé par mot de passe par courrier ; s\'ouvre sans GEC avec 7-Zip ou WinRAR.') }}</flux:text>
+                    @endif
+                </div>
+            </div>
+            @if ($copiePc['active'])
+                <flux:button variant="outline" icon="arrow-path" wire:click="lancerSauvegardeLocale" class="shrink-0">{{ __('Mettre à jour maintenant') }}</flux:button>
+            @endif
+        </div>
 
         @if (! $dernier)
             <div class="{{ $carte }}">

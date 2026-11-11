@@ -5,7 +5,6 @@ namespace App\Livewire\Backend;
 use App\Concerns\ChoixServiceCascade;
 use App\Models\Courrier;
 use App\Models\Service;
-use App\Models\TransfertService;
 use App\Services\WorkflowService;
 use Flux\Flux;
 use Illuminate\Support\Facades\Auth;
@@ -110,15 +109,13 @@ class MesCourriers extends Component
         $this->resetPage();
     }
 
-    // Courriers ENTRANT créés par l'utilisateur courant (via l'historique
-    // append-only, Règle n°5), cumulé avec Courrier::scopeVisiblePar() (même
-    // règle que leur fiche) — base commune de la liste et du filtre Service.
+    // Courriers ENTRANT créés par l'utilisateur courant — base commune de la
+    // liste et du filtre Service. Requête partagée avec les cartes du
+    // tableau de bord (2026-11-10, Courrier::scopeEnregistresPar()) : mêmes
+    // chiffres des deux côtés.
     private function mesCourriers()
     {
-        return Courrier::query()
-            ->visiblePar(Auth::user())
-            ->where('sens', 'entrant')
-            ->whereHas('historiques', fn ($q) => $q->where('action', 'creation')->where('auteur_id', Auth::id()));
+        return Courrier::query()->enregistresPar(Auth::user());
     }
 
     // Toujours paginé (Règle n°3). Recherche et filtres (2026-10-30) : mêmes
@@ -135,11 +132,7 @@ class MesCourriers extends Component
         };
 
         return $this->mesCourriers()
-            ->when(
-                $this->onglet === 'acceptes',
-                fn ($q) => $q->whereHas('dernierTransfert', fn ($q) => $q->where('statut', TransfertService::ACCEPTE)),
-                fn ($q) => $q->where('statut', $this->onglet),
-            )
+            ->ongletMesCourriers($this->onglet)
             ->when($this->recherche !== '', fn ($q) => $q->where(fn ($w) => $w
                 ->where('numero_reference', 'like', "%{$this->recherche}%")
                 ->orWhere('objet', 'like', "%{$this->recherche}%")

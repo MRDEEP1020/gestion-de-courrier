@@ -44,6 +44,8 @@ class Parametre extends Model
         'decharge_numero_chiffres',
         // Durée de conservation par défaut des archives (2026-10-30, Module 9).
         'conservation_annees_defaut',
+        // Validité d'un mot de passe en jours, 0 = jamais (2026-11-11).
+        'mot_de_passe_expiration_jours',
     ];
 
     // Repères remplacés à l'impression d'une décharge (voir
@@ -63,6 +65,7 @@ class Parametre extends Model
         return [
             'numero_reference_chiffres_sequence' => 'integer',
             'conservation_annees_defaut' => 'integer',
+            'mot_de_passe_expiration_jours' => 'integer',
             'sla_jours_defaut' => 'integer',
             'sla_seuil_risque_jours' => 'integer',
             'sla_relance_jours' => 'integer',

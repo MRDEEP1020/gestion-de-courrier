@@ -3,7 +3,12 @@
 namespace App\Providers;
 
 use App\Listeners\EnregistrerDerniereConnexion;
+use App\Models\Courrier;
+use App\Models\DossierClassement;
+use App\Models\PieceJointe;
+use App\Models\User;
 use App\Services\ChiffrementFichiers;
+use App\Services\SauvegardeLocale;
 use App\Services\StockageChiffre;
 use Carbon\CarbonImmutable;
 use Illuminate\Auth\Events\Login;
@@ -52,7 +57,38 @@ class AppServiceProvider extends ServiceProvider
 
         $this->declarerLeDisqueChiffre();
 
+        $this->tenirLaCopieDuPcAJour();
+
         $this->servirLesAssetsCompilesAuxVisiteurs();
+    }
+
+    // 2026-11-11 (« est-ce qu'elle serait créée automatiquement chaque fois
+    // qu'un utilisateur va créer un dossier ») — copie de secours sur le PC
+    // (App\Services\SauvegardeLocale) : un dossier créé, renommé, déplacé ou
+    // supprimé, un courrier enregistré, classé ou supprimé, une pièce jointe
+    // ajoutée → mise à jour dans les secondes qui suivent.
+    private function tenirLaCopieDuPcAJour(): void
+    {
+        $signaler = fn () => SauvegardeLocale::signalerChangement();
+
+        foreach ([DossierClassement::class, Courrier::class, PieceJointe::class] as $modele) {
+            $modele::saved($signaler);
+            $modele::deleted($signaler);
+        }
+
+        DossierClassement::restored($signaler);
+        Courrier::restored($signaler);
+
+        // Copie personnelle : mot de passe de sauvegarde défini ou retiré,
+        // compte activé/désactivé, nom ou accès changé — pas à chaque
+        // enregistrement d'un compte (la date de dernière connexion change
+        // à chaque connexion).
+        User::saved(function (User $user) use ($signaler) {
+            if ($user->wasChanged(['mot_de_passe_sauvegarde', 'actif', 'name', 'profil_id', 'service_id', 'niveau_confidentialite'])) {
+                $signaler();
+            }
+        });
+        User::deleted($signaler);
     }
 
     // 2026-11-09, voir DECISIONS.md « Fichiers : chiffrement, aperçu

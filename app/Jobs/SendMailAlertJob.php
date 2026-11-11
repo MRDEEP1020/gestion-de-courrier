@@ -26,9 +26,10 @@ use Throwable;
 // voir bootstrap/app.php et DECISIONS.md "SLA et alertes") :
 //   - "bientôt en retard" : une fois par date limite, quand il reste au plus
 //     Parametre::actuel()->sla_seuil_risque_jours jours ;
-//   - "en retard" : dès le dépassement, puis relance au plus tous les
-//     Parametre::actuel()->sla_relance_jours jours tant que le courrier
-//     reste actif. Délais éditables depuis "Paramètres système" (2026-09-23,
+//   - "en retard" : dès le dépassement, puis relance tant que le courrier
+//     reste actif, à l'intervalle de chaque destinataire
+//     (User::frequenceRelanceSlaHeures(), sinon Parametre::actuel()->
+//     sla_relance_jours de l'administrateur). Délais éditables depuis "Paramètres système" (2026-09-23,
 //     remplace config/gec.php), pas de redéploiement nécessaire pour les changer.
 // Règle n°1 : Job planifié, jamais une vérification au chargement d'une page.
 class SendMailAlertJob implements ShouldQueue
@@ -165,10 +166,16 @@ class SendMailAlertJob implements ShouldQueue
         return $destinataires->filter(function (User $user) use ($derniereRelanceParUtilisateur, $dateLimite) {
             $derniereRelance = $derniereRelanceParUtilisateur->get($user->id);
 
+            // Intervalle en heures (2026-11-11), compté depuis le DÉBUT de
+            // l'heure du dernier envoi : le job passe chaque heure à quelques
+            // secondes près — envoyé à 10:00:03, une relance de 24 h n'était
+            // pas due à 10:00:01 le lendemain et glissait d'une heure à
+            // chaque envoi.
             return $derniereRelance === null
                 || $derniereRelance->date_limite !== $dateLimite
                 || Carbon::parse($derniereRelance->notifie_le)
-                    ->addDays($user->frequenceRelanceSlaJours())
+                    ->startOfHour()
+                    ->addHours($user->frequenceRelanceSlaHeures())
                     ->lte(now());
         })->values();
     }
@@ -252,9 +259,11 @@ class SendMailAlertJob implements ShouldQueue
             'courrier_id' => $courrier->id,
             'auteur_id' => null,
             'action' => 'alerte_escalade',
-            'commentaire' => $destinataires->isEmpty()
-                ? 'Alerte SLA (escalade) : aucun destinataire autorisé trouvé.'
-                : 'Alerte SLA (escalade) envoyée à '.$destinataires->pluck('name')->implode(', '),
+            'commentaire' => match (true) {
+                $destinataires->isNotEmpty() => 'Alerte SLA (escalade) envoyée à '.$destinataires->pluck('name')->implode(', '),
+                $this->responsableTraiteLuiMeme($courrier) => 'Alerte SLA (escalade) : le responsable traite lui-même ce courrier et aucun niveau supérieur n\'est relié dans l\'Organisation.',
+                default => 'Alerte SLA (escalade) : aucun destinataire autorisé trouvé.',
+            },
         ]);
     }
 
@@ -264,6 +273,16 @@ class SendMailAlertJob implements ShouldQueue
     {
         $destinataires = $this->destinataires($courrier, enRetard: true);
 
+        // 2026-11-10 (« if it is the responsible doing the traitement some of
+        // the workflow process should not send notif ») — le responsable qui
+        // traite lui-même le courrier reçoit déjà ses relances « en retard » ;
+        // l'escalade prévient sa hiérarchie, elle ne lui est pas adressée.
+        if ($this->responsableTraiteLuiMeme($courrier)) {
+            $destinataires = $destinataires
+                ->reject(fn (User $user) => $user->id === $courrier->service->responsable_id)
+                ->values();
+        }
+
         $superieur = $this->responsableNiveauSuperieur($courrier);
 
         if ($superieur !== null && $superieur->can('view', $courrier)) {
@@ -271,6 +290,13 @@ class SendMailAlertJob implements ShouldQueue
         }
 
         return $destinataires;
+    }
+
+    private function responsableTraiteLuiMeme(Courrier $courrier): bool
+    {
+        $responsableId = $courrier->service?->responsable_id;
+
+        return $responsableId !== null && $courrier->affectationCourante?->user_id === $responsableId;
     }
 
     // Remonte l'organigramme (App\Models\OrganizationUnit, voir "Organisation"

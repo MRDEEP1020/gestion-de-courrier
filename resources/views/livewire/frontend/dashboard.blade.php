@@ -66,14 +66,23 @@
          dashboard.statistiques partagée). Chaque computed retourne `null`
          sans son privilège ; la rangée entière ne s'affiche que si au moins
          une carte l'est. --}}
-    @if ($this->courrierEntrantAujourdhui !== null || $this->courrierSortantAujourdhui !== null || $this->enAttenteDeTraitement !== null || $this->courriersUrgents !== null || $this->courriersEnRetard !== null || $this->courriersNonTransferes !== null || $this->delaiMoyen !== null)
+    @php
+        $cartesKpi = collect([
+            $this->mesCourriersATransferer, $this->mesCourriersEnAttenteAcceptation, $this->mesCourriersAcceptes,
+            $this->courrierEntrantAujourdhui, $this->courrierSortantAujourdhui, $this->enAttenteDeTraitement,
+            $this->courriersUrgents, $this->courriersEnRetard, $this->courriersAAffecter, $this->delaiMoyen,
+        ])->whereNotNull();
+        // Cartes « Mes courriers » : un lien vers l'onglet seulement si la
+        // page est accessible (sinon un 403 au clic).
+        $lienMesCourriers = auth()->user()->can('voirMesCourriers', App\Models\Courrier::class);
+        $classeCarteMesCourriers = 'block rounded-xl border border-brand-border bg-white p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-900'
+            .($lienMesCourriers ? ' transition hover:border-brand-accent hover:shadow-md' : '');
+    @endphp
+    @if ($cartesKpi->isNotEmpty())
     {{-- Squelette (2026-09-24, "loading animation on each table, cards,
          panels refreshing") — même nombre de cartes que ci-dessous. --}}
     @php
-        $nombreCartesKpi = collect([
-            $this->courrierEntrantAujourdhui, $this->courrierSortantAujourdhui, $this->enAttenteDeTraitement,
-            $this->courriersUrgents, $this->courriersEnRetard, $this->courriersNonTransferes, $this->delaiMoyen,
-        ])->whereNotNull()->count();
+        $nombreCartesKpi = $cartesKpi->count();
     @endphp
     <div x-data="squeletteMinimum()">
         <div wire:loading.class.remove="hidden" x-ref="sentinelle" class="hidden" aria-hidden="true"></div>
@@ -83,6 +92,64 @@
             @endfor
         </div>
         <div x-show="!visible" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {{-- 2026-11-10 (« it should match her mes courrier ») — les trois
+             onglets de « Mes courriers », en tête : c'est le travail de la
+             réceptionniste (Dashboard::mesCourriers*()). Chaque carte ouvre
+             son onglet. --}}
+        @if ($this->mesCourriersATransferer !== null)
+        <a @if ($lienMesCourriers) href="{{ route('courriers.mes-courriers', ['onglet' => 'en_attente_de_transfert']) }}" wire:navigate @endif class="{{ $classeCarteMesCourriers }}">
+            <div class="flex items-center gap-2.5">
+                <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-brand-accent/10 text-brand-accent">
+                    <flux:icon.arrow-right-circle class="size-4" />
+                </div>
+                <div class="min-w-0 flex-1">
+                    <flux:text class="truncate text-xs text-zinc-500">{{ __('À transférer') }}</flux:text>
+                    <div class="text-xl font-semibold leading-tight">{{ $this->mesCourriersATransferer }}</div>
+                </div>
+                <flux:icon.chevron-right class="size-4 shrink-0 text-zinc-300" />
+            </div>
+            <flux:text class="mt-2 truncate text-xs text-zinc-500">{{ __('à envoyer à un service') }}</flux:text>
+        </a>
+        @endif
+
+        @if ($this->mesCourriersEnAttenteAcceptation !== null)
+        <a @if ($lienMesCourriers) href="{{ route('courriers.mes-courriers', ['onglet' => 'en_cours_de_transfert']) }}" wire:navigate @endif class="{{ $classeCarteMesCourriers }}">
+            <div class="flex items-center gap-2.5">
+                <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-brand-warning/10 text-brand-warning">
+                    <flux:icon.clock class="size-4" />
+                </div>
+                <div class="min-w-0 flex-1">
+                    {{-- « En attente d'acceptation » (nom de l'onglet) coupé à
+                         1366 px : titre court, la suite en sous-titre. --}}
+                    <flux:text class="truncate text-xs text-zinc-500">{{ __('En attente') }}</flux:text>
+                    <div class="text-xl font-semibold leading-tight">{{ $this->mesCourriersEnAttenteAcceptation }}</div>
+                </div>
+                <flux:icon.chevron-right class="size-4 shrink-0 text-zinc-300" />
+            </div>
+            <flux:text class="mt-2 truncate text-xs text-zinc-500">{{ __('d\'acceptation par le service') }}</flux:text>
+        </a>
+        @endif
+
+        @if ($this->mesCourriersAcceptes !== null)
+        <a @if ($lienMesCourriers) href="{{ route('courriers.mes-courriers', ['onglet' => 'acceptes']) }}" wire:navigate @endif class="{{ $classeCarteMesCourriers }}">
+            <div class="flex items-center gap-2.5">
+                <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-brand-success/10 text-brand-success">
+                    <flux:icon.check-circle class="size-4" />
+                </div>
+                <div class="min-w-0 flex-1">
+                    <flux:text class="truncate text-xs text-zinc-500">{{ __('Acceptés') }}</flux:text>
+                    <div class="text-xl font-semibold leading-tight">{{ $this->mesCourriersAcceptes['total'] }}</div>
+                </div>
+                <flux:icon.chevron-right class="size-4 shrink-0 text-zinc-300" />
+            </div>
+            @if ($this->mesCourriersAcceptes['a_remettre'] > 0)
+                <flux:text class="mt-2 truncate text-xs font-medium text-brand-warning-dark">{{ trans_choice(':n original à remettre|:n originaux à remettre', $this->mesCourriersAcceptes['a_remettre'], ['n' => $this->mesCourriersAcceptes['a_remettre']]) }}</flux:text>
+            @else
+                <flux:text class="mt-2 truncate text-xs text-zinc-500">{{ __('aucun original à remettre') }}</flux:text>
+            @endif
+        </a>
+        @endif
+
         @if ($this->courrierEntrantAujourdhui !== null)
         <div class="rounded-xl border border-brand-border bg-white p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
             <div class="flex items-center gap-2.5">
@@ -184,9 +251,10 @@
         </div>
         @endif
 
-        {{-- Module 10 (2026-10-09) — jamais affecté/transféré depuis
-             l'enregistrement (Dashboard::courriersNonTransferes()). --}}
-        @if ($this->courriersNonTransferes !== null)
+        {{-- Module 10 — acceptés par le service, pas encore affectés
+             (Dashboard::courriersAAffecter()) ; « Non transférés » jusqu'au
+             2026-11-10, voir Courrier::scopeAAffecter(). --}}
+        @if ($this->courriersAAffecter !== null)
         <div class="rounded-xl border border-brand-border bg-white p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
             <div class="flex items-center gap-2.5">
                 {{-- indigo-100/indigo-600 (2026-10-12, calage sur la maquette
@@ -204,12 +272,12 @@
                     <flux:icon.inbox-stack class="size-4" />
                 </div>
                 <div class="min-w-0 flex-1">
-                    <flux:text class="truncate text-xs text-zinc-500">{{ __('Non transférés') }}</flux:text>
-                    <div class="text-xl font-semibold leading-tight">{{ $this->courriersNonTransferes }}</div>
+                    <flux:text class="truncate text-xs text-zinc-500">{{ __('À affecter') }}</flux:text>
+                    <div class="text-xl font-semibold leading-tight">{{ $this->courriersAAffecter }}</div>
                 </div>
                 <flux:icon.chevron-right class="size-4 shrink-0 text-zinc-300" />
             </div>
-            <flux:text class="mt-2 truncate text-xs text-zinc-500">{{ __('jamais affectés/transférés') }}</flux:text>
+            <flux:text class="mt-2 truncate text-xs text-zinc-500">{{ __('acceptés, pas encore affectés') }}</flux:text>
         </div>
         @endif
 
@@ -247,13 +315,82 @@
         <div>
             <div class="flex items-center justify-between">
                 <flux:heading level="2">{{ __('Derniers courriers enregistrés') }}</flux:heading>
-                @can('rechercher', App\Models\Courrier::class)
+                {{-- 2026-11-10 — même règle que l'entrée « Tous les courriers »
+                     de la barre latérale (Dashboard::listeMesCourriers()) : la
+                     réceptionniste garde la recherche de l'en-tête mais n'a
+                     que « Mes courriers », vers où mène alors le lien. --}}
+                @if ($this->listeMesCourriers)
+                    <flux:link :href="route('courriers.mes-courriers')" wire:navigate>{{ __('Voir mes courriers') }} →</flux:link>
+                @elseif (auth()->user()->can('rechercher', App\Models\Courrier::class) && auth()->user()->hasPrivilege('courriers.menu_tous_les_courriers'))
                     <flux:link :href="route('courriers.rechercher')" wire:navigate>{{ __('Voir tous') }} →</flux:link>
-                @endcan
+                @endif
             </div>
 
             @if ($this->derniersCourriers->isEmpty())
                 <flux:text class="mt-4 text-zinc-500">{{ __('Aucun courrier pour l\'instant.') }}</flux:text>
+            @elseif ($this->listeMesCourriers)
+                {{-- 2026-11-10 (« show them this », capture de l'onglet
+                     « Acceptés ») — colonnes de « Mes courriers » : où le
+                     courrier est parti, son numéro de décharge, l'original
+                     remis ou à remettre. Même format de tableau que ci-dessous. --}}
+                <div x-data="squeletteMinimum()" class="@container mt-4 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                    <div wire:loading.class.remove="hidden" x-ref="sentinelle" class="hidden" aria-hidden="true"></div>
+                    <table class="w-full text-sm">
+                        <thead class="border-b-2 border-brand-navy text-left text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-400 dark:text-zinc-400">
+                            <tr>
+                                <th class="w-px whitespace-nowrap py-3 pl-4 pr-3 @min-[60rem]:pr-5">{{ __('Référence') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Objet') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5 @max-[44rem]:hidden">{{ __('Type') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Service') }}</th>
+                                <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5">{{ __('Décharge') }}</th>
+                                <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Original') }}</th>
+                                <th class="w-px py-3 pr-4">{{ __('Date de réception') }}</th>
+                            </tr>
+                        </thead>
+                        <tbody x-show="visible" x-cloak class="divide-y divide-zinc-200 dark:divide-zinc-700">
+                            <x-skeleton.table-rows :cols="7" :rows="5" />
+                        </tbody>
+                        <tbody x-show="!visible" class="divide-y divide-zinc-200 dark:divide-zinc-700">
+                            @foreach ($this->derniersCourriers as $courrier)
+                                @php
+                                    $transfert = $courrier->dernierTransfert;
+                                    $accepte = $transfert?->statut === App\Models\TransfertService::ACCEPTE;
+                                    $serviceLigne = $courrier->service?->nom ?? __('—');
+                                @endphp
+                                <tr class="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800" onclick="window.location='{{ route('courriers.show', $courrier->id) }}'">
+                                    <td class="whitespace-nowrap py-4 pl-4 pr-3 @min-[60rem]:pr-5 font-medium">
+                                        <span class="block max-w-36 truncate" title="{{ $courrier->numero_reference }}"><flux:link :href="route('courriers.show', $courrier->id)" wire:navigate class="text-brand-accent">{{ $courrier->numero_reference }}</flux:link></span>
+                                    </td>
+                                    <td class="w-[50%] min-w-24 py-4 pr-3 @min-[60rem]:pr-5 @max-[44rem]:w-[58%]">
+                                        <div class="w-0 min-w-full truncate" title="{{ $courrier->objet }}">{{ $courrier->objet }}</div>
+                                    </td>
+                                    <td class="w-[20%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:hidden">
+                                        <div class="w-0 min-w-full truncate" title="{{ $courrier->type_document }}">{{ $courrier->type_document }}</div>
+                                    </td>
+                                    {{-- Pas encore transféré : pas de service. --}}
+                                    <td class="w-[30%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:w-[42%]">
+                                        <div class="w-0 min-w-full truncate" title="{{ $serviceLigne }}">{{ $serviceLigne }}</div>
+                                    </td>
+                                    <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">{{ $accepte ? ($transfert->numero_decharge ?? __('—')) : __('—') }}</td>
+                                    {{-- Badges « Remis » / « À remettre » de l'onglet
+                                         « Acceptés » ; avant l'acceptation, l'étape. --}}
+                                    <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5">
+                                        @if ($accepte && $transfert->original_remis_le)
+                                            <span class="inline-flex items-center rounded-md bg-brand-success-light px-2 py-0.5 text-xs font-semibold text-brand-success-dark">{{ __('Remis') }}</span>
+                                        @elseif ($accepte)
+                                            <span class="inline-flex items-center rounded-md bg-brand-warning-light px-2 py-0.5 text-xs font-semibold text-brand-warning-dark">{{ __('À remettre') }}</span>
+                                        @elseif ($courrier->statut === 'en_cours_de_transfert')
+                                            <span class="text-xs text-zinc-500">{{ __('En attente') }}</span>
+                                        @else
+                                            <span class="text-xs text-zinc-500">{{ __('À transférer') }}</span>
+                                        @endif
+                                    </td>
+                                    <td class="whitespace-nowrap py-4 pr-4 text-zinc-500">{{ $courrier->date_mouvement->format('d/m/Y') }}</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
             @else
                 <div x-data="squeletteMinimum()" class="@container mt-4 overflow-x-auto rounded-2xl border border-brand-border bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                     <div wire:loading.class.remove="hidden" x-ref="sentinelle" class="hidden" aria-hidden="true"></div>
@@ -274,7 +411,7 @@
                                 <th class="w-px whitespace-nowrap py-3 pr-3 @min-[60rem]:pr-5 pl-4">{{ __('N° Référence') }}</th>
                                 <th class="py-3 pr-3 @min-[60rem]:pr-5 @max-[44rem]:hidden">{{ __('Type') }}</th>
                                 <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Expéditeur') }}</th>
-                                <th class="py-3 pr-3 @min-[60rem]:pr-5 @max-[60rem]:hidden">{{ __('Destinataire') }}</th>
+                                <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Destinataire') }}</th>
                                 <th class="py-3 pr-3 @min-[60rem]:pr-5">{{ __('Objet') }}</th>
                                 <th class="w-px py-3 pr-3 @min-[60rem]:pr-5">{{ __('Date de réception') }}</th>
                                 <th class="w-px py-3 pr-4">{{ __('Statut') }}</th>
@@ -301,16 +438,20 @@
                                     <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 pl-4 font-medium">
                                         <span class="block max-w-36 truncate" title="{{ $courrier->numero_reference }}"><flux:link :href="route('courriers.show', $courrier->id)" wire:navigate class="text-brand-accent">{{ $courrier->numero_reference }}</flux:link></span>
                                     </td>
-                                    <td class="w-[20%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:hidden">
+                                    {{-- 2026-11-10 (capture de l'utilisateur, « check ») —
+                                         parts ramenées à 100 % : à 130 % (20+30+30+50), le
+                                         navigateur les servait de gauche à droite et « Objet »,
+                                         la plus utile, finissait la plus étroite. --}}
+                                    <td class="w-[14%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:hidden">
                                         <div class="w-0 min-w-full truncate" title="{{ $typeLigne }}">{{ $typeLigne }}</div>
                                     </td>
-                                    <td class="w-[30%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:w-[38%]">
+                                    <td class="w-[20%] min-w-16 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:w-[24%]">
                                         <div class="w-0 min-w-full truncate" title="{{ $correspondantLigne }}">{{ $correspondantLigne }}</div>
                                     </td>
-                                    <td class="w-[30%] min-w-20 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:w-[38%]">
+                                    <td class="w-[20%] min-w-16 py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500 @max-[44rem]:w-[24%]">
                                         <div class="w-0 min-w-full truncate" title="{{ $destinataireLigne }}">{{ $destinataireLigne }}</div>
                                     </td>
-                                    <td class="w-[50%] min-w-24 py-4 pr-3 @min-[60rem]:pr-5 @max-[44rem]:w-[62%]">
+                                    <td class="w-[46%] min-w-24 py-4 pr-3 @min-[60rem]:pr-5 @max-[44rem]:w-[52%]">
                                         <div class="w-0 min-w-full truncate" title="{{ $courrier->objet }}">{{ $courrier->objet }}</div>
                                     </td>
                                     <td class="whitespace-nowrap py-4 pr-3 @min-[60rem]:pr-5 text-zinc-500">{{ $courrier->date_mouvement->format('d/m/Y') }}</td>
@@ -320,8 +461,12 @@
                                              compte à rebours masqué ici aussi (2026-10-02, "remove on
                                              the dashboard too"), ne garde que les badges d'état.
                                              2026-10-29 — sur la même ligne que le statut, comme
-                                             « Tous les courriers ». --}}
-                                        <div class="flex items-center gap-1 whitespace-nowrap @max-[44rem]:flex-col @max-[44rem]:items-start">
+                                             « Tous les courriers ».
+                                             2026-11-10 — chaque badge reste sur une ligne, mais
+                                             « En retard » passe sous le statut au lieu d'élargir la
+                                             colonne de TOUTES les lignes (258 px pour une seule
+                                             ligne en retard, texte des autres colonnes coupé). --}}
+                                        <div class="flex flex-wrap items-center gap-1 *:whitespace-nowrap">
                                             <x-statut-badge :statut="$courrier->statut" class="rounded-md! px-2! font-semibold!" />
                                             <x-chronometre :courrier="$courrier" :masquer-temps="true" />
                                         </div>

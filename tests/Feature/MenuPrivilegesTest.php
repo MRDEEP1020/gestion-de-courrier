@@ -53,7 +53,7 @@ class MenuPrivilegesTest extends TestCase
             // « Mes courriers » au menu à la place de « Tous les courriers »
             // (nouvelle clé courriers.menu_tous_les_courriers, sans l'Agent).
             'Agent' => [
-                'voit' => ['Tableau de bord', 'Mes courriers', 'Enregistrer un courrier', 'Numérisation & OCR', 'Tous les dossiers', 'Archives', 'Notifications', 'Aide / Documentation'],
+                'voit' => ['Tableau de bord', 'Mes courriers', 'Enregistrer un courrier', 'Numérisation & OCR', 'Tous les dossiers', 'Archives', 'Notifications'],
                 'pas' => ['Tous les courriers', 'Transferts', 'Affectations', 'Créer un dossier', 'Configuration', 'Statistiques & Rapports', 'Recherche avancée'],
             ],
             // "Transferts" retiré pour tous le 2026-09-24 (page supprimée,
@@ -64,11 +64,11 @@ class MenuPrivilegesTest extends TestCase
             // la session sans entrée de changelog ; journalisé
             // rétroactivement en corrigeant ce test.
             'Collaborateur' => [
-                'voit' => ['Tableau de bord', 'Tous les courriers', 'Traitement & Réponse', 'Créer un dossier', 'Archives'],
+                'voit' => ['Tableau de bord', 'Tous les courriers', 'Créer un dossier', 'Archives'],
                 'pas' => ['Transferts', 'Enregistrer un courrier', 'Numérisation & OCR', 'Affectations', 'Configuration', 'Statistiques & Rapports'],
             ],
             'Responsable de service' => [
-                'voit' => ['Tous les courriers', 'Affectations', 'Statistiques & Rapports', 'Rapports'],
+                'voit' => ['Tous les courriers', 'Statistiques & Rapports'],
                 'pas' => ['Transferts', 'Enregistrer un courrier', 'Numérisation & OCR', 'Configuration'],
             ],
             // "Administration" revenu dans 'pas' le 2026-10-23 : la délégation
@@ -79,7 +79,7 @@ class MenuPrivilegesTest extends TestCase
             // Générale et affecte ses courriers (voir DECISIONS.md "Titres
             // des chefs et Direction Générale").
             'DG' => [
-                'voit' => ['Tous les courriers', 'Statistiques & Rapports', 'Affectations'],
+                'voit' => ['Tous les courriers', 'Statistiques & Rapports'],
                 'pas' => ['Transferts', 'Enregistrer un courrier', 'Numérisation & OCR', 'Configuration'],
             ],
             'Administrateur' => [
@@ -88,7 +88,7 @@ class MenuPrivilegesTest extends TestCase
                 // fix largeur/scrollbar) — attente du test jamais mise à
                 // jour à ce moment-là, repéré en creusant une fausse alerte
                 // sur ce test le 2026-10-08.
-                'voit' => ['Configuration', 'Utilisateurs & Accès', 'Profils', 'Organisation', 'Référentiels', 'Automatisation', 'Workflows', 'Paramètres système', 'Dossier surveillé', 'Sécurité & Audit', 'Numérisation & OCR'],
+                'voit' => ['Configuration', 'Utilisateurs & Accès', 'Profils', 'Organisation', 'Référentiels', 'Paramètres système', 'Dossier surveillé', 'Sécurité & Audit', 'Numérisation & OCR'],
                 'pas' => ['Transferts'],
             ],
         ];
@@ -117,6 +117,21 @@ class MenuPrivilegesTest extends TestCase
 
         $this->actingAs($agent)->get(route('courriers.rechercher', ['q' => 'test']))->assertOk();
         $this->actingAs($agent)->get(route('courriers.mes-courriers'))->assertOk();
+    }
+
+    // 2026-11-11 (« hide the pages that are grisées on the sidebar ») : les
+    // modules pas encore construits ne s'affichent plus, même pour
+    // l'Administrateur qui a tous les privilèges — ni entrée grisée, ni
+    // groupe « Aide » réduit à un titre.
+    public function test_les_entrees_grisees_ne_sont_plus_affichees(): void
+    {
+        $page = $this->sidebar($this->avecProfil('Administrateur'));
+
+        foreach (['Automatisation', 'Workflows', 'Aide / Documentation', 'Traitement & Réponse', 'Affectations'] as $libelle) {
+            $page->assertDontSee($libelle);
+        }
+
+        $page->assertDontSee('opacity-60')->assertDontSee('>Aide<', false);
     }
 
     // Aucun privilège : ni entrée ni titre de groupe vide — seuls

@@ -44,32 +44,52 @@ class DashboardKpiPrivilegesTest extends TestCase
         Privilege::where('cle', $cle)->firstOrFail()->profils()->syncWithoutDetaching(Profil::where('nom', $profil)->value('id'));
     }
 
+    // 2026-11-10 (« it should match her mes courrier ») — l'Agent a les trois
+    // cartes de « Mes courriers » à la place de « À affecter » (ex-« Non
+    // transférés »), qui reste aux profils qui affectent ou supervisent.
     public function test_toutes_les_cartes_visibles_par_defaut_pour_un_agent(): void
     {
         $this->actingAs($this->utilisateur('Agent'));
 
         $component = Livewire::test(Dashboard::class);
 
+        $this->assertNotNull($component->get('mesCourriersATransferer'));
+        $this->assertNotNull($component->get('mesCourriersEnAttenteAcceptation'));
+        $this->assertNotNull($component->get('mesCourriersAcceptes'));
         $this->assertNotNull($component->get('courrierEntrantAujourdhui'));
         $this->assertNotNull($component->get('courrierSortantAujourdhui'));
         $this->assertNotNull($component->get('enAttenteDeTraitement'));
         $this->assertNotNull($component->get('courriersUrgents'));
         $this->assertNotNull($component->get('courriersEnRetard'));
-        $this->assertNotNull($component->get('courriersNonTransferes'));
+        $this->assertNull($component->get('courriersAAffecter'));
         $this->assertTrue($component->get('peutVoirNotifications'));
     }
 
-    // Chaque carte principale (les 6 KPI) dépend d'une clé INDÉPENDANTE des
-    // autres — jamais un bloc partagé comme l'ancienne dashboard.statistiques.
+    public function test_un_responsable_garde_a_affecter_sans_les_cartes_mes_courriers(): void
+    {
+        $this->actingAs($this->utilisateur('Responsable de service'));
+
+        $component = Livewire::test(Dashboard::class);
+
+        $this->assertNotNull($component->get('courriersAAffecter'));
+        $this->assertNull($component->get('mesCourriersATransferer'));
+        $this->assertNull($component->get('mesCourriersEnAttenteAcceptation'));
+        $this->assertNull($component->get('mesCourriersAcceptes'));
+    }
+
+    // Chaque carte principale dépend d'une clé INDÉPENDANTE des autres —
+    // jamais un bloc partagé comme l'ancienne dashboard.statistiques.
     public function test_chaque_carte_kpi_a_sa_propre_cle_independante(): void
     {
         $cartes = [
+            'dashboard.mes_a_transferer' => 'mesCourriersATransferer',
+            'dashboard.mes_en_attente_acceptation' => 'mesCourriersEnAttenteAcceptation',
+            'dashboard.mes_acceptes' => 'mesCourriersAcceptes',
             'dashboard.courrier_entrant' => 'courrierEntrantAujourdhui',
             'dashboard.courrier_sortant' => 'courrierSortantAujourdhui',
             'dashboard.en_attente' => 'enAttenteDeTraitement',
             'dashboard.urgents' => 'courriersUrgents',
             'dashboard.en_retard' => 'courriersEnRetard',
-            'dashboard.non_transferes' => 'courriersNonTransferes',
         ];
 
         $agent = $this->utilisateur('Agent');
@@ -95,19 +115,22 @@ class DashboardKpiPrivilegesTest extends TestCase
     public function test_sans_aucune_carte_principale_ni_delai_moyen_la_rangee_disparait(): void
     {
         $agent = $this->utilisateur('Agent');
-        foreach (['dashboard.courrier_entrant', 'dashboard.courrier_sortant', 'dashboard.en_attente', 'dashboard.urgents', 'dashboard.en_retard', 'dashboard.non_transferes'] as $cle) {
+        foreach (['dashboard.mes_a_transferer', 'dashboard.mes_en_attente_acceptation', 'dashboard.mes_acceptes', 'dashboard.courrier_entrant', 'dashboard.courrier_sortant', 'dashboard.en_attente', 'dashboard.urgents', 'dashboard.en_retard'] as $cle) {
             $this->retirer($cle, 'Agent');
         }
         $this->actingAs(User::find($agent->id));
 
         $component = Livewire::test(Dashboard::class)->assertOk();
 
+        $this->assertNull($component->get('mesCourriersATransferer'));
+        $this->assertNull($component->get('mesCourriersEnAttenteAcceptation'));
+        $this->assertNull($component->get('mesCourriersAcceptes'));
         $this->assertNull($component->get('courrierEntrantAujourdhui'));
         $this->assertNull($component->get('courrierSortantAujourdhui'));
         $this->assertNull($component->get('enAttenteDeTraitement'));
         $this->assertNull($component->get('courriersUrgents'));
         $this->assertNull($component->get('courriersEnRetard'));
-        $this->assertNull($component->get('courriersNonTransferes'));
+        $this->assertNull($component->get('courriersAAffecter'));
     }
 
     // Carte décorative "Notifications" — sa propre clé, indépendante des
@@ -133,7 +156,10 @@ class DashboardKpiPrivilegesTest extends TestCase
         $this->assertNotNull($component->get('enAttenteDeTraitement'));
         $this->assertNotNull($component->get('courriersUrgents'));
         $this->assertNotNull($component->get('courriersEnRetard'));
-        $this->assertNotNull($component->get('courriersNonTransferes'));
+        $this->assertNotNull($component->get('courriersAAffecter'));
+        $this->assertNotNull($component->get('mesCourriersATransferer'));
+        $this->assertNotNull($component->get('mesCourriersEnAttenteAcceptation'));
+        $this->assertNotNull($component->get('mesCourriersAcceptes'));
         $this->assertTrue($component->get('peutVoirNotifications'));
     }
 

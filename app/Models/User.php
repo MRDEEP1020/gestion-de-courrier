@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Carbon\CarbonInterface;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
@@ -39,7 +40,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
  * @property Carbon|null $updated_at
  */
 #[Fillable(['name', 'email', 'password', 'profil_id', 'service_id', 'telephone', 'poste', 'photo_path', 'actif', 'niveau_confidentialite', 'preferences_notifications'])]
-#[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token'])]
+#[Hidden(['password', 'two_factor_secret', 'two_factor_recovery_codes', 'remember_token', 'mot_de_passe_sauvegarde'])]
 class User extends Authenticatable implements PasskeyUser
 {
     /** @use HasFactory<UserFactory> */
@@ -78,6 +79,11 @@ class User extends Authenticatable implements PasskeyUser
             'derniere_connexion_le' => 'datetime',
             'niveau_confidentialite' => 'integer',
             'preferences_notifications' => 'array',
+            // 2026-11-11 — ouvre SA copie de secours sur le PC ; chiffré en
+            // base, jamais exposé (voir App\Services\SauvegardeLocale).
+            'mot_de_passe_sauvegarde' => 'encrypted',
+            'mot_de_passe_sauvegarde_le' => 'datetime',
+            'mot_de_passe_change_le' => 'datetime',
         ];
     }
 
@@ -146,13 +152,76 @@ class User extends Authenticatable implements PasskeyUser
         return $this->privilegesCles()->contains($cle);
     }
 
-    public function frequenceRelanceSlaJours(): int
-    {
-        $personnalisee = $this->preferences_notifications['sla_relance_jours'] ?? null;
+    // 2026-11-11 (« je veux que les mots de passe d'utilisateur expirent et
+    // ils devront le renouveler ») — mot_de_passe_change_le : dernier mot de
+    // passe CHOISI par la personne (renouvellement, lien de réinitialisation).
+    // Null = jamais choisi par elle (compte existant, mot de passe donné) :
+    // à définir dès la prochaine connexion. Durée de validité :
+    // Parametre::mot_de_passe_expiration_jours (0 = jamais).
+    public const MOT_DE_PASSE_PREAVIS_JOURS = 7;
 
-        return is_numeric($personnalisee)
-            ? max(1, min(10, (int) $personnalisee))
-            : Parametre::actuel()->sla_relance_jours;
+    public function motDePasseExpireLe(): ?CarbonInterface
+    {
+        $jours = (int) Parametre::actuel()->mot_de_passe_expiration_jours;
+
+        return $this->mot_de_passe_change_le !== null && $jours > 0
+            ? $this->mot_de_passe_change_le->addDays($jours)
+            : null;
+    }
+
+    public function doitRenouvelerMotDePasse(): bool
+    {
+        return $this->mot_de_passe_change_le === null
+            || ($this->motDePasseExpireLe()?->isPast() ?? false);
+    }
+
+    /** 'initial' (jamais choisi), 'expire', 'bientot' (préavis) ou null. */
+    public function raisonRenouvellementMotDePasse(): ?string
+    {
+        return match (true) {
+            $this->mot_de_passe_change_le === null => 'initial',
+            $this->doitRenouvelerMotDePasse() => 'expire',
+            $this->joursAvantExpirationMotDePasse() !== null => 'bientot',
+            default => null,
+        };
+    }
+
+    // Jours restants quand l'expiration approche (préavis), sinon null.
+    public function joursAvantExpirationMotDePasse(): ?int
+    {
+        $expire = $this->motDePasseExpireLe();
+
+        if ($expire === null || $expire->isPast()) {
+            return null;
+        }
+
+        $jours = max(1, (int) ceil(now()->diffInDays($expire)));
+
+        return $jours <= self::MOT_DE_PASSE_PREAVIS_JOURS ? $jours : null;
+    }
+
+    // Intervalle des relances « en retard », en HEURES (2026-11-11, « set it
+    // them self like in the clock phone ») : réglé comme un minuteur de
+    // téléphone, jours + heures, de 1 h à 10 jours. Un réglage enregistré en
+    // jours avant cette date (sla_relance_jours) reste valable.
+    public const RELANCE_SLA_HEURES_MAX = 240;
+
+    public function relanceSlaPersonnelleHeures(): ?int
+    {
+        $preferences = is_array($this->preferences_notifications) ? $this->preferences_notifications : [];
+
+        $heures = match (true) {
+            is_numeric($preferences['sla_relance_heures'] ?? null) => (int) $preferences['sla_relance_heures'],
+            is_numeric($preferences['sla_relance_jours'] ?? null) => (int) $preferences['sla_relance_jours'] * 24,
+            default => null,
+        };
+
+        return $heures === null ? null : max(1, min(self::RELANCE_SLA_HEURES_MAX, $heures));
+    }
+
+    public function frequenceRelanceSlaHeures(): int
+    {
+        return $this->relanceSlaPersonnelleHeures() ?? Parametre::actuel()->sla_relance_jours * 24;
     }
 
     // once() : mémoïsé pour la durée de la requête — plusieurs abilities

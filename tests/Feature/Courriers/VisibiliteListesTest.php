@@ -29,6 +29,9 @@ class VisibiliteListesTest extends TestCase
         parent::setUp();
 
         $this->seed(DatabaseSeeder::class);
+        // Comptes pilotes : mot de passe jamais choisi → renouvellement imposé
+        // (ExigerMotDePasseAJour, 2026-11-11), sans rapport avec ce test.
+        User::query()->update(['mot_de_passe_change_le' => now()]);
         $this->agent = User::where('email', 'agent@test.local')->firstOrFail();
         $this->responsable = User::where('email', 'responsable.dsin@test.local')->firstOrFail();
     }

@@ -68,6 +68,18 @@ return [
         'apercu_auto' => env('ARCHIVAGE_APERCU_AUTO', true),
     ],
 
+    // 2026-11-11 — copie de secours sur le PC, rangée par dossier de
+    // classement, en ZIP chiffrés (App\Services\SauvegardeLocale). Désactivée
+    // tant que le dossier OU le mot de passe manque. Le mot de passe sert à
+    // ouvrir les ZIP sans GEC : à garder aussi hors de ce PC.
+    'sauvegarde_locale' => [
+        'dossier' => env('GEC_SAUVEGARDE_DOSSIER'),
+        'mot_de_passe' => env('GEC_SAUVEGARDE_MOT_DE_PASSE'),
+        // Copies personnelles en PDF à deux mots de passe (personne OU
+        // passe-partout) : outil qpdf (https://qpdf.sourceforge.io).
+        'qpdf' => env('GEC_QPDF_BINAIRE', 'qpdf'),
+    ],
+
     // 2026-11-09 — occupation du stockage (Sécurité & Audit › Stockage) :
     // dossier de données du stockage objet, quand il est sur un disque de ce
     // serveur (MinIO), pour afficher l'espace libre. Vide pour un stockage

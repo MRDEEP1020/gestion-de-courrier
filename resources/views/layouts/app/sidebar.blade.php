@@ -13,6 +13,7 @@
          place) redeviennent visuellement distincts, comme dans le schéma. --}}
 
 <body class="min-h-screen bg-brand-surface dark:bg-zinc-800">
+    <x-chargement-page />
     {{-- bg-brand-navy (2026-09-17, système de couleurs GEC —
              --color-brand-navy = #0B1F3A, "Sidebar background, brand
              identity"). class="dark" scope la sidebar en mode sombre UNIQUEMENT pour
@@ -429,12 +430,11 @@ $compteurNotificationsNonLues = $menu['notifications'] ? $u->unreadNotifications
                      premier niveau distinct de "Paramètres", décoratif dans
                      la navbar desktop existante (voir plus bas), aucune page
                      d'aide/documentation ne lui est encore rattachée. --}}
-            @if ($menu['aide'])
-                <flux:sidebar.group :heading="__('Aide')" icon="question-mark-circle" class="grid">
-                    <x-sidebar-item-a-venir
-                        icon="question-mark-circle">{{ __('Aide / Documentation') }}</x-sidebar-item-a-venir>
-                </flux:sidebar.group>
-            @endif
+            {{-- 2026-11-11 (« hide the pages that are grisées on the sidebar ») :
+                 groupe retiré tant qu'aucune page d'aide n'existe (il ne
+                 contenait que l'entrée grisée « Aide / Documentation » et
+                 restait comme un titre vide). La clé $menu['aide'] (privilège
+                 general.aide) est gardée pour le jour où la page existe. --}}
 
             <form method="POST" action="{{ route('logout') }}">
                 @csrf

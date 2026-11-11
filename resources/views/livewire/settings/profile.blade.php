@@ -12,7 +12,7 @@
 
     <flux:heading level="2" class="sr-only">{{ __('Mon profil') }}</flux:heading>
 
-    <x-settings.layout :heading="__('Mon profil')" :subheading="__('Vous pouvez changer votre photo. Le reste de votre compte est géré par l\'administrateur.')" :large="true">
+    <x-settings.layout :heading="__('Mon profil')" :subheading="__('Vous pouvez changer votre photo et votre mot de passe de sauvegarde. Le reste de votre compte est géré par l\'administrateur.')" :large="true">
         <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_260px]">
             <div class="space-y-6">
                 {{-- Seule partie modifiable par l'utilisateur, enregistrée
@@ -38,6 +38,61 @@
                         </div>
                     </div>
                 </div>
+
+                {{-- 2026-11-11 — mot de passe de sauvegarde : il ouvre SA copie
+                     de secours sur le PC, sans GEC (Profile::definirMotDePasseSauvegarde(),
+                     App\Services\SauvegardeLocale). --}}
+                <div class="rounded-xl border border-brand-border p-5 dark:border-zinc-700">
+                    <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <div class="flex items-center gap-2">
+                            <flux:icon.archive-box class="size-4 text-brand-accent" />
+                            <flux:heading level="3">{{ __('Copie de secours sur le PC') }}</flux:heading>
+                        </div>
+                        @if ($this->copiePersonnelle['definie'])
+                            <flux:badge size="sm" color="green" icon="check">{{ __('Mot de passe défini') }}</flux:badge>
+                        @else
+                            <flux:badge size="sm" color="zinc">{{ __('Pas de mot de passe') }}</flux:badge>
+                        @endif
+                    </div>
+                    <flux:text class="text-sm">{{ __('Si GEC est en panne, vous pourrez ouvrir vos courriers dans la copie de secours avec votre mot de passe de sauvegarde. Il est différent de votre mot de passe de connexion.') }}</flux:text>
+
+                    @if ($this->copiePersonnelle['definie'])
+                        <flux:text class="mt-2 text-sm">{{ __('Défini le :quand.', ['quand' => $this->copiePersonnelle['le']->format('d/m/Y à H:i')]) }}</flux:text>
+                        @if ($this->copiePersonnelle['active'])
+                            <flux:text class="mt-1 break-all text-xs text-zinc-500">{{ __('Votre copie : :chemin', ['chemin' => $this->copiePersonnelle['chemin']]) }}</flux:text>
+                        @endif
+                    @endif
+                    @unless ($this->copiePersonnelle['active'])
+                        <flux:text class="mt-2 text-xs text-zinc-500">{{ __('La copie de secours n\'est pas encore activée par l\'administrateur : votre mot de passe servira dès qu\'elle le sera.') }}</flux:text>
+                    @endunless
+
+                    <div class="mt-4 flex flex-wrap gap-2">
+                        <flux:modal.trigger name="mot-de-passe-sauvegarde">
+                            <flux:button size="sm" icon="key">{{ $this->copiePersonnelle['definie'] ? __('Changer le mot de passe') : __('Définir un mot de passe') }}</flux:button>
+                        </flux:modal.trigger>
+                        @if ($this->copiePersonnelle['definie'])
+                            <flux:button size="sm" variant="ghost" icon="trash" wire:click="retirerMotDePasseSauvegarde" wire:confirm="{{ __('Retirer votre mot de passe de sauvegarde ? Votre copie personnelle sera supprimée du PC (la copie complète de l\'administrateur reste).') }}" class="text-brand-danger!">{{ __('Retirer') }}</flux:button>
+                        @endif
+                    </div>
+                </div>
+
+                <flux:modal name="mot-de-passe-sauvegarde" class="w-full max-w-md">
+                    <form wire:submit="definirMotDePasseSauvegarde" class="space-y-5">
+                        <div>
+                            <flux:heading size="lg">{{ __('Mot de passe de sauvegarde') }}</flux:heading>
+                            <flux:text class="mt-1">{{ __('Il ouvrira vos courriers dans la copie de secours, sans GEC, directement dans Edge, Chrome ou Adobe, en lecture seule (ni impression ni copie). Notez-le bien. L\'administrateur garde aussi un passe-partout, mais personne d\'autre ne connaît le vôtre.') }}</flux:text>
+                        </div>
+                        <flux:input wire:model="motDePasseActuel" type="password" :label="__('Votre mot de passe de connexion')" viewable autocomplete="current-password" />
+                        <flux:input wire:model="motDePasseSauvegarde" type="password" :label="__('Nouveau mot de passe de sauvegarde')" :description="__('Au moins 8 caractères, différent de votre mot de passe de connexion.')" viewable autocomplete="new-password" />
+                        <flux:input wire:model="motDePasseSauvegarde_confirmation" type="password" :label="__('Confirmer le mot de passe de sauvegarde')" viewable autocomplete="new-password" />
+                        <div class="flex justify-end gap-2">
+                            <flux:modal.close>
+                                <flux:button variant="ghost">{{ __('Annuler') }}</flux:button>
+                            </flux:modal.close>
+                            <flux:button type="submit" variant="primary" icon="check">{{ __('Enregistrer') }}</flux:button>
+                        </div>
+                    </form>
+                </flux:modal>
 
                 {{-- Lecture seule : coordonnées (modifiables par l'administrateur seulement) --}}
                 <div class="space-y-4 rounded-xl border border-brand-border bg-brand-surface-soft p-5 dark:border-zinc-700 dark:bg-zinc-800/40">
@@ -154,6 +209,14 @@
                         <div class="flex items-start gap-2">
                             <flux:icon.clock class="mt-0.5 size-4 shrink-0 text-zinc-400" />
                             <div class="min-w-0"><dt class="text-xs text-zinc-500">{{ __('Dernière connexion') }}</dt><dd>{{ $utilisateur->derniere_connexion_le?->format('d/m/Y H:i') ?? '—' }}</dd></div>
+                        </div>
+                        {{-- 2026-11-11 — expiration du mot de passe (User::motDePasseExpireLe()). --}}
+                        <div class="flex items-start gap-2">
+                            <flux:icon.key class="mt-0.5 size-4 shrink-0 text-zinc-400" />
+                            <div class="min-w-0">
+                                <dt class="text-xs text-zinc-500">{{ __('Mot de passe') }}</dt>
+                                <dd>{{ $utilisateur->motDePasseExpireLe() ? __('Expire le :date', ['date' => $utilisateur->motDePasseExpireLe()->format('d/m/Y')]) : __('N\'expire pas') }}</dd>
+                            </div>
                         </div>
                     </dl>
                 </div>

@@ -6,6 +6,54 @@
 
 import './echo';
 
+// Écran de chargement plein page (2026-11-11, « i want this type of loading
+// instead » ; voir components/chargement-page.blade.php et .chargement-page
+// dans app.css). Visible dans le HTML au premier chargement : masqué ici à la
+// fin du chargement (au moins 350 ms, pour qu'il ne clignote pas), puis
+// affiché pendant un changement de page (wire:navigate) ou une action
+// Livewire lente. Les délais évitent de l'afficher pour ce qui est instantané.
+(() => {
+    const ecran = () => document.getElementById('chargement-page');
+    const montrer = () => ecran()?.classList.add('est-visible');
+    const cacher = () => ecran()?.classList.remove('est-visible');
+    const debut = performance.now();
+    let minuteurNavigation = null;
+    let actionsEnCours = 0;
+    let minuteurAction = null;
+
+    const finDeChargement = () => setTimeout(cacher, Math.max(0, 350 - (performance.now() - debut)));
+    document.readyState === 'complete' ? finDeChargement() : window.addEventListener('load', finDeChargement, { once: true });
+
+    // Changement de page : affiché si la page tarde plus de 150 ms.
+    document.addEventListener('livewire:navigate', () => {
+        clearTimeout(minuteurNavigation);
+        minuteurNavigation = setTimeout(montrer, 150);
+    });
+    document.addEventListener('livewire:navigated', () => {
+        clearTimeout(minuteurNavigation);
+        cacher();
+    });
+
+    // Action Livewire (filtre, enregistrement…) : affiché au-delà de 700 ms.
+    document.addEventListener('livewire:init', () => {
+        window.Livewire.hook('commit', ({ succeed, fail }) => {
+            actionsEnCours++;
+            clearTimeout(minuteurAction);
+            minuteurAction = setTimeout(montrer, 700);
+
+            const terminer = () => {
+                if (--actionsEnCours <= 0) {
+                    actionsEnCours = 0;
+                    clearTimeout(minuteurAction);
+                    cacher();
+                }
+            };
+            succeed(terminer);
+            fail(terminer);
+        });
+    });
+})();
+
 // Module 5 — chronomètre de traitement (2026-09-24, voir
 // resources/views/components/chronometre.blade.php). Compte à rebours
 // purement client, recalé sur l'heure du serveur (data-maintenant) pour ne
@@ -145,6 +193,12 @@ document.addEventListener('alpine:init', () => {
         },
 
         synchroniser(sentinelle) {
+            // 2026-11-11 (« i want this type of loading instead ») : les
+            // squelettes ne s'affichent plus, l'écran de chargement plein
+            // page (ci-dessus) les remplace ; le contenu reste visible.
+            return;
+
+            // eslint-disable-next-line no-unreachable
             const enCours = !sentinelle.classList.contains('hidden');
 
             clearTimeout(this._minuteur);
@@ -166,6 +220,113 @@ document.addEventListener('alpine:init', () => {
             const restant = Math.max(0, dureeMinimaleMs - ecoule);
 
             this._minuteur = setTimeout(() => { this.visible = false; }, restant);
+        },
+    }));
+
+    // Minuteur « Rappels de courrier en retard » (2026-11-11, « set it them
+    // self like in the clock phone », puis « inside a modal ») : deux roues à
+    // défilement aimanté, jours (0-10) et heures (0-23), comme le minuteur
+    // d'un téléphone, dans une modale. Flèches haut/bas au clavier, Entrée
+    // pour enregistrer ; rien ne part au serveur avant « Enregistrer »
+    // (NotificationPreferences::definirRelance()). Bornes : au moins 1 heure,
+    // au plus 10 jours pile.
+    window.Alpine.data('roueIntervalle', (jours, heures, textes) => ({
+        jours,
+        heures,
+        applique: { jours, heures },
+        textes,
+        hauteurLigne: 48,
+        maximum: { jours: 10, heures: 23 },
+        _bornes: null,
+        _observateur: null,
+
+        // Cachées dans la modale au chargement, les roues ne peuvent être
+        // placées qu'une fois visibles : à chaque ouverture, elles repartent
+        // de l'intervalle appliqué (un « Annuler » précédent est oublié).
+        init() {
+            this._observateur = new IntersectionObserver((entrees) => {
+                if (entrees.some((entree) => entree.isIntersecting)) this.reprendre();
+            });
+            this._observateur.observe(this.$el);
+        },
+
+        destroy() {
+            this._observateur?.disconnect();
+            clearTimeout(this._bornes);
+        },
+
+        reprendre() {
+            clearTimeout(this._bornes);
+            this.jours = this.applique.jours;
+            this.heures = this.applique.heures;
+            this.placer('jours', false);
+            this.placer('heures', false);
+        },
+
+        // « 2 jours 6 heures » pendant que les roues tournent.
+        get libelle() {
+            const morceau = (n, un, plusieurs) => (n > 1 ? plusieurs : un).replace(':count', n);
+
+            return [
+                this.jours > 0 ? morceau(this.jours, this.textes.jour, this.textes.jours) : null,
+                this.heures > 0 ? morceau(this.heures, this.textes.heure, this.textes.heures) : null,
+            ].filter(Boolean).join(' ') || morceau(1, this.textes.heure, this.textes.heures);
+        },
+
+        placer(roue, doux = true) {
+            this.$refs[roue].scrollTo({ top: this[roue] * this.hauteurLigne, behavior: doux ? 'smooth' : 'instant' });
+        },
+
+        // Fin de défilement : la ligne arrêtée au centre devient la valeur.
+        lire(roue) {
+            this.fixer(roue, Math.round(this.$refs[roue].scrollTop / this.hauteurLigne), false);
+        },
+
+        pas(roue, sens) {
+            this.fixer(roue, this[roue] + sens, true);
+        },
+
+        fixer(roue, valeur, replacer) {
+            valeur = Math.max(0, Math.min(this.maximum[roue], valeur));
+
+            if (valeur === this[roue]) {
+                if (replacer) this.placer(roue);
+
+                return;
+            }
+
+            this[roue] = valeur;
+
+            if (replacer) this.placer(roue);
+
+            clearTimeout(this._bornes);
+            this._bornes = setTimeout(() => this.borner(), 400);
+        },
+
+        // Bornes appliquées une fois les DEUX roues arrêtées : appliquées
+        // pendant qu'une roue tourne encore, elles la renvoyaient en arrière.
+        borner() {
+            if (this.jours === 0 && this.heures === 0) {
+                this.heures = 1;
+                this.placer('heures');
+            }
+
+            if (this.jours === 10 && this.heures > 0) {
+                this.heures = 0;
+                this.placer('heures');
+            }
+        },
+
+        enregistrer() {
+            clearTimeout(this._bornes);
+            this.borner();
+            this.$wire.definirRelance(this.jours, this.heures);
+        },
+
+        // Intervalle appliqué, envoyé par le serveur après un enregistrement
+        // ou un retour au réglage de l'administrateur.
+        replacer({ jours, heures }) {
+            this.applique = { jours, heures };
         },
     }));
 });

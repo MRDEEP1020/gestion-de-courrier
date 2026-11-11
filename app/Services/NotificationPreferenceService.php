@@ -33,6 +33,12 @@ class NotificationPreferenceService
 
     public const CANAUX = ['email', 'application'];
 
+    // 2026-11-10 (« the notif for mail and app only the admin can see and
+    // modify it but everybody can do it Rappels de courrier en retard ») —
+    // choisir ses canaux est un privilège (Administrateur par défaut) ; le
+    // rythme des rappels de retard reste réglable par tous.
+    public const PRIVILEGE_CANAUX = 'general.choisir_canaux_notification';
+
     public function preferencesParDefaut(): array
     {
         $preferences = array_fill_keys(
@@ -58,10 +64,17 @@ class NotificationPreferenceService
     /**
      * Réglage appliqué à l'utilisateur, par catégorie et canal : son propre
      * choix quand il en a fait un, sinon la valeur par défaut administrateur.
+     * Sans le privilège PRIVILEGE_CANAUX, toujours celle de l'administrateur :
+     * un choix enregistré avant le 2026-11-10 est ignoré (pas effacé).
      */
     public function preferencesDe(User $user): array
     {
         $preferences = $this->preferencesParDefaut();
+
+        if (! $user->hasPrivilege(self::PRIVILEGE_CANAUX)) {
+            return $preferences;
+        }
+
         $enregistrees = is_array($user->preferences_notifications) ? $user->preferences_notifications : [];
 
         foreach ($preferences as $categorie => $canaux) {

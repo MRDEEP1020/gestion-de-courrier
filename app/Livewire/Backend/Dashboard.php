@@ -115,17 +115,62 @@ class Dashboard extends Component
         return $this->courriersVisibles()->enRetard()->count();
     }
 
-    // Module 10 (2026-10-09, demande explicite de l'utilisateur) — courriers
-    // encore au tout premier statut du circuit (Courrier::scopeNonTransfere()),
-    // jamais affectés/transférés depuis leur enregistrement.
+    // Module 10 — « À affecter » : acceptés par le service, pas encore
+    // affectés (Courrier::scopeAAffecter()). Carte « Non transférés »
+    // jusqu'au 2026-11-10 — elle comptait ces courriers comme « jamais
+    // transférés » ; la clé dashboard.non_transferes est gardée telle quelle
+    // (les assignations faites depuis l'interface restent valables).
     #[Computed]
-    public function courriersNonTransferes(): ?int
+    public function courriersAAffecter(): ?int
     {
         if (! Auth::user()->hasPrivilege('dashboard.non_transferes')) {
             return null;
         }
 
-        return $this->courriersVisibles()->nonTransfere()->count();
+        return $this->courriersVisibles()->aAffecter()->count();
+    }
+
+    // 2026-11-10 (« it should match her mes courrier ») — la réceptionniste
+    // n'a que « Mes courriers » : ses cartes sont les trois onglets de cette
+    // page, comptés avec la MÊME requête (Courrier::scopeEnregistresPar() +
+    // scopeOngletMesCourriers()), chacune ouvrant son onglet. Une clé par
+    // carte, comme les autres.
+    #[Computed]
+    public function mesCourriersATransferer(): ?int
+    {
+        return Auth::user()->hasPrivilege('dashboard.mes_a_transferer')
+            ? $this->mesCourriersDansOnglet('en_attente_de_transfert')->count()
+            : null;
+    }
+
+    #[Computed]
+    public function mesCourriersEnAttenteAcceptation(): ?int
+    {
+        return Auth::user()->hasPrivilege('dashboard.mes_en_attente_acceptation')
+            ? $this->mesCourriersDansOnglet('en_cours_de_transfert')->count()
+            : null;
+    }
+
+    // L'onglet « Acceptés » garde aussi les originaux déjà remis : le total
+    // est celui de l'onglet, « à remettre » ce qui reste à faire.
+    #[Computed]
+    public function mesCourriersAcceptes(): ?array
+    {
+        if (! Auth::user()->hasPrivilege('dashboard.mes_acceptes')) {
+            return null;
+        }
+
+        return [
+            'total' => $this->mesCourriersDansOnglet('acceptes')->count(),
+            'a_remettre' => $this->mesCourriersDansOnglet('acceptes')
+                ->whereHas('dernierTransfert', fn ($q) => $q->whereNull('original_remis_le'))
+                ->count(),
+        ];
+    }
+
+    private function mesCourriersDansOnglet(string $onglet): Builder
+    {
+        return Courrier::query()->enregistresPar(Auth::user())->ongletMesCourriers($onglet);
     }
 
     // Cartes "Notifications"/"Calendrier" du panneau latéral (2026-09-23) —
@@ -207,11 +252,34 @@ class Dashboard extends Component
             return null;
         }
 
+        if ($this->listeMesCourriers) {
+            return Courrier::query()
+                ->enregistresPar(Auth::user())
+                ->with(['service', 'dernierTransfert'])
+                ->latest('date_mouvement')
+                ->limit(8)
+                ->get();
+        }
+
         return $this->courriersVisibles()
             ->with('service')
             ->latest('date_mouvement')
             ->limit(8)
             ->get();
+    }
+
+    // 2026-11-10 (« show them this », capture de l'onglet « Acceptés ») —
+    // sans « Tous les courriers » au menu (même règle que la barre latérale :
+    // recherche + clé de menu) mais avec « Mes courriers », la liste est
+    // celle de cette page : ses courriers entrants (même requête), avec
+    // service, décharge et original, et son lien mène à « Mes courriers ».
+    #[Computed]
+    public function listeMesCourriers(): bool
+    {
+        $user = Auth::user();
+
+        return $user->can('voirMesCourriers', Courrier::class)
+            && ! ($user->can('rechercher', Courrier::class) && $user->hasPrivilege('courriers.menu_tous_les_courriers'));
     }
 
     // Module 10 — "Tâches du jour" (demande explicite de l'utilisateur,

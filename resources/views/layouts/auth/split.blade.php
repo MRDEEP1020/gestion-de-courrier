@@ -37,6 +37,7 @@
         @include('partials.head')
     </head>
     <body class="min-h-dvh bg-white antialiased dark:bg-zinc-900">
+        <x-chargement-page />
         <div class="flex min-h-dvh">
             {{-- Panneau de marque (desktop) — couleurs écrites en dur : la
                  règle globale [data-flux-heading] force le noir (app.css),

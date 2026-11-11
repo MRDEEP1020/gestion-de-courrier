@@ -175,6 +175,9 @@ class PrivilegeSeeder extends Seeder
             'courriers.voir_consultations' => ['Voir le journal des consultations', 'Voir qui a ouvert la fiche ou consulté les documents d\'un courrier, et quand.', 'lecture', []],
             'archives.gerer_conservation' => ['Gérer la conservation des archives', 'Fixer les durées de conservation, prolonger, placer sous gel juridique et détruire (avec motif) les archives arrivées à échéance.', 'administratif', []],
             'general.notifications' => ['Voir les notifications', 'Afficher le menu "Notifications" et la cloche de la barre supérieure.', 'lecture', ['Agent', 'DG', 'Responsable de service', 'Collaborateur']],
+            // 2026-11-10 (« the notif for mail and app only the admin can see
+            // and modify it ») — Administrateur seul par défaut.
+            'general.choisir_canaux_notification' => ['Choisir ses canaux de notification', 'Afficher et modifier ses interrupteurs E-mail / Application (Paramètres › Notifications). Sans ce privilège, les canaux suivent les réglages de l\'administrateur (Paramètres système) ; le rythme des rappels de courrier en retard reste réglable par tous.', 'ecriture', []],
             // Actions sur un courrier séparées de la simple consultation
             // (2026-09-23, "all of them") — mêmes défauts qu'avant (tout
             // profil pouvant consulter), sauf la suppression, nouvelle.
@@ -268,7 +271,15 @@ class PrivilegeSeeder extends Seeder
             'dashboard.en_retard' => ['Voir "En retard"', 'Afficher la carte "En retard" (dépassement SLA) du tableau de bord.', 'lecture', ['Agent', 'DG', 'Responsable de service', 'Collaborateur']],
             // 2026-10-09, demande explicite de l'utilisateur — nouvelle carte,
             // même 4 profils par défaut que les autres cartes KPI ci-dessus.
-            'dashboard.non_transferes' => ['Voir "Courriers non transférés"', 'Afficher la carte "Courriers non transférés" (jamais affectés/transférés depuis leur enregistrement) du tableau de bord.', 'lecture', ['Agent', 'DG', 'Responsable de service', 'Collaborateur']],
+            // 2026-11-10 — devenue « À affecter » (voir Courrier::scopeAAffecter()),
+            // clé inchangée ; plus l'Agent par défaut : ses cartes sont
+            // désormais celles de « Mes courriers » ci-dessous.
+            'dashboard.non_transferes' => ['Voir "À affecter"', 'Afficher la carte "À affecter" (courriers acceptés par le service, pas encore affectés) du tableau de bord.', 'lecture', ['DG', 'Responsable de service', 'Collaborateur']],
+            // 2026-11-10 (« it should match her mes courrier ») — les trois
+            // onglets de « Mes courriers » en cartes, une clé chacune.
+            'dashboard.mes_a_transferer' => ['Voir "À transférer"', 'Afficher la carte "À transférer" (ses courriers enregistrés, pas encore envoyés à un service) du tableau de bord.', 'lecture', ['Agent']],
+            'dashboard.mes_en_attente_acceptation' => ['Voir "En attente d\'acceptation"', 'Afficher la carte "En attente d\'acceptation" (ses courriers transférés, pas encore acceptés par le service) du tableau de bord.', 'lecture', ['Agent']],
+            'dashboard.mes_acceptes' => ['Voir "Acceptés"', 'Afficher la carte "Acceptés" (ses courriers acceptés par le service, avec les originaux papier à remettre) du tableau de bord.', 'lecture', ['Agent']],
             'dashboard.derniers_courriers' => ['Voir les derniers courriers', 'Afficher la liste "Derniers courriers enregistrés" du tableau de bord.', 'lecture', ['Agent', 'DG', 'Responsable de service', 'Collaborateur']],
             'dashboard.delai_moyen' => ['Voir le délai moyen de traitement', 'Afficher la carte "Délai moyen de traitement" (toute l\'entreprise avec "Voir tous les courriers", sinon ses services).', 'lecture', ['Responsable de service']],
             // Panneau latéral : cartes "Notifications" et "Calendrier"

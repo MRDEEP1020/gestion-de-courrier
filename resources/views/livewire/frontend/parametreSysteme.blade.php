@@ -40,6 +40,7 @@
                         ['cle' => 'notifications', 'label' => __('Préférences de notification'), 'icon' => 'bell'],
                         ['cle' => 'sla_type', 'label' => __('SLA — Par type de document'), 'icon' => 'queue-list'],
                         ['cle' => 'qualite', 'label' => __('Confidentialité & qualité scan/OCR'), 'icon' => 'shield-check'],
+                        ['cle' => 'comptes', 'label' => __('Sécurité des comptes'), 'icon' => 'key'],
                         ['cle' => 'liste_type_document', 'label' => __('Types de document'), 'icon' => 'document-text'],
                         ['cle' => 'liste_mode_reception', 'label' => __('Modes de réception'), 'icon' => 'inbox-arrow-down'],
                         ['cle' => 'liste_priorite', 'label' => __('Priorités'), 'icon' => 'flag'],
@@ -147,6 +148,27 @@
                 </div>
             </div>
 
+            {{-- ----- Sécurité des comptes (2026-11-11, « les mots de passe
+                 d'utilisateur expirent et ils devront le renouveler ») ----- --}}
+            <div x-show="section === 'comptes'" x-cloak class="rounded-2xl border border-brand-border bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+                <div class="mb-1 flex items-center gap-2">
+                    <flux:icon.key class="size-4 text-brand-accent" />
+                    <flux:heading level="2" class="text-base">{{ __('Sécurité des comptes') }}</flux:heading>
+                </div>
+                <flux:text class="mb-4 text-zinc-500">{{ __('Un mot de passe expiré doit être renouvelé à la connexion avant toute autre page ; un préavis s\'affiche 7 jours avant. Un mot de passe jamais choisi par la personne (donné par quelqu\'un d\'autre) doit être remplacé dès la première connexion.') }}</flux:text>
+
+                <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    <flux:input
+                        type="number"
+                        wire:model="motDePasseExpirationJours"
+                        :label="__('Validité du mot de passe (jours)')"
+                        min="0"
+                        max="3650"
+                        :description="__('0 = le mot de passe n\'expire jamais.')"
+                    />
+                </div>
+            </div>
+
             {{-- ----- Préférences de notification — valeurs par défaut ----- --}}
             <div x-show="section === 'notifications'" x-cloak class="rounded-2xl border border-brand-border bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                 <div class="mb-1 flex items-center gap-2">
@@ -183,7 +205,7 @@
                         @endforeach
                     </div>
                 </div>
-                <flux:text class="mt-3 text-sm">{{ __('« Application » regroupe la cloche et les alertes qui s\'affichent en direct. Un utilisateur qui a personnalisé un réglage garde son choix.') }}</flux:text>
+                <flux:text class="mt-3 text-sm">{{ __('« Application » regroupe la cloche et les alertes qui s\'affichent en direct. Ces réglages s\'appliquent à tous, sauf aux comptes autorisés à choisir leurs canaux (privilège « Choisir ses canaux de notification ») qui en ont changé un.') }}</flux:text>
             </div>
 
             {{-- ----- SLA — délais par type de document ----- --}}

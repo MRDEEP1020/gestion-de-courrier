@@ -139,14 +139,39 @@ class Courrier extends Model
                 ->orWhere(fn ($q) => $q->whereNull('chrono_fin_le')->whereDate('date_limite', '<', today())));
     }
 
-    // Module 10 (2026-10-09, carte tableau de bord "Courriers non
-    // transférés") — courrier encore au tout premier statut du circuit,
-    // jamais affecté/transféré depuis son enregistrement (voir
-    // WorkflowService::TRANSITIONS['enregistre'], point d'entrée avant
-    // toute transition).
-    public function scopeNonTransfere(Builder $query): Builder
+    // Module 10 — carte tableau de bord « À affecter » (clé
+    // dashboard.non_transferes). Née le 2026-10-09 comme « Non transférés »
+    // (« enregistre » était alors le tout premier statut) ; depuis le
+    // transfert direct au service (2026-10-23), un courrier entrant démarre à
+    // « en_attente_de_transfert » et « enregistre » veut dire « Accepté — à
+    // affecter » (STATUTS_LIBELLES) : la carte disait « 3 jamais transférés »
+    // pour 3 courriers acceptés. Renommée le 2026-11-10 (tournée des pages).
+    public function scopeAAffecter(Builder $query): Builder
     {
         return $query->where('statut', 'enregistre');
+    }
+
+    // « Mes courriers » de la réceptionniste (MesCourriers, et ses cartes du
+    // tableau de bord depuis le 2026-11-10, « it should match her mes
+    // courrier ») : courriers ENTRANT qu'elle a enregistrés (historique
+    // append-only, Règle n°5), cumulé avec la même règle que leur fiche.
+    public function scopeEnregistresPar(Builder $query, User $user): Builder
+    {
+        return $query
+            ->visiblePar($user)
+            ->where('sens', 'entrant')
+            ->whereHas('historiques', fn ($q) => $q->where('action', 'creation')->where('auteur_id', $user->id));
+    }
+
+    // Un onglet de « Mes courriers » : le statut du circuit, sauf
+    // « acceptes » — dernier transfert accepté, quel que soit le statut
+    // actuel (l'original papier reste à remettre même si le service a déjà
+    // affecté le courrier entre-temps).
+    public function scopeOngletMesCourriers(Builder $query, string $onglet): Builder
+    {
+        return $onglet === 'acceptes'
+            ? $query->whereHas('dernierTransfert', fn ($q) => $q->where('statut', TransfertService::ACCEPTE))
+            : $query->where('statut', $onglet);
     }
 
     // "confidentialite" est un ENTIER (1 à 5) depuis le 2026-09-21 —

@@ -4,9 +4,12 @@ namespace App\Livewire\Settings;
 
 use App\Models\OrganizationUnit;
 use App\Services\AvatarService;
+use App\Services\SauvegardeLocale;
 use Flux\Flux;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -26,6 +29,13 @@ class Profile extends Component
 
     // Exception à la Règle n°2 (upload natif de Livewire), comme UserList.
     public $photo = null;
+
+    // Modale « Mot de passe de sauvegarde » (definirMotDePasseSauvegarde()).
+    public string $motDePasseActuel = '';
+
+    public string $motDePasseSauvegarde = '';
+
+    public string $motDePasseSauvegarde_confirmation = '';
 
     // Enregistrée dès qu'elle est choisie (pas de bouton à part).
     public function updatedPhoto(AvatarService $avatars): void
@@ -48,6 +58,60 @@ class Profile extends Component
         $this->reset('photo');
 
         Flux::toast(text: __('Photo retirée.'));
+    }
+
+    // 2026-11-11 (« je veux que ce soit les login password qui pourront
+    // ouvrir les dossiers enregistrés dans la machine, plus un passe-partout »,
+    // choix « Mot de passe de sauvegarde par personne ») — il ouvre SA copie
+    // de secours sur le PC (App\Services\SauvegardeLocale). Confirmé par le
+    // mot de passe de connexion, et différent de lui : GEC doit pouvoir
+    // relire celui-ci (chiffré en base) pour chiffrer les ZIP, jamais celui
+    // de connexion.
+    public function definirMotDePasseSauvegarde(): void
+    {
+        $this->validate([
+            'motDePasseActuel' => ['required', 'string', 'current_password'],
+            'motDePasseSauvegarde' => ['required', 'string', 'min:8', 'max:128', 'confirmed'],
+        ], [], [
+            'motDePasseActuel' => __('mot de passe de connexion'),
+            'motDePasseSauvegarde' => __('mot de passe de sauvegarde'),
+        ]);
+
+        if (Hash::check($this->motDePasseSauvegarde, Auth::user()->password)) {
+            throw ValidationException::withMessages([
+                'motDePasseSauvegarde' => __('Choisissez un mot de passe différent de votre mot de passe de connexion.'),
+            ]);
+        }
+
+        Auth::user()->forceFill([
+            'mot_de_passe_sauvegarde' => $this->motDePasseSauvegarde,
+            'mot_de_passe_sauvegarde_le' => now(),
+        ])->save();
+
+        $this->reset('motDePasseActuel', 'motDePasseSauvegarde', 'motDePasseSauvegarde_confirmation');
+        Flux::modal('mot-de-passe-sauvegarde')->close();
+        Flux::toast(variant: 'success', text: __('Mot de passe de sauvegarde enregistré : votre copie sera prête dans quelques instants.'));
+    }
+
+    public function retirerMotDePasseSauvegarde(): void
+    {
+        Auth::user()->forceFill(['mot_de_passe_sauvegarde' => null, 'mot_de_passe_sauvegarde_le' => null])->save();
+
+        Flux::toast(text: __('Mot de passe de sauvegarde retiré : votre copie personnelle sera supprimée du PC.'));
+    }
+
+    #[Computed]
+    public function copiePersonnelle(): array
+    {
+        $user = Auth::user();
+        $sauvegarde = app(SauvegardeLocale::class);
+
+        return [
+            'active' => $sauvegarde->active(),
+            'definie' => $user->mot_de_passe_sauvegarde_le !== null,
+            'le' => $user->mot_de_passe_sauvegarde_le,
+            'chemin' => $sauvegarde->racine().'/'.SauvegardeLocale::DOSSIER_PERSONNES.'/'.SauvegardeLocale::nomPropre($user->name)." (n°{$user->id})",
+        ];
     }
 
     /**

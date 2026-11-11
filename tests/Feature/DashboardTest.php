@@ -3,13 +3,16 @@
 namespace Tests\Feature;
 
 use App\Livewire\Backend\Dashboard;
+use App\Livewire\Backend\MesCourriers;
 use App\Models\Affectation;
 use App\Models\Courrier;
 use App\Models\CourrierHistorique;
+use App\Models\Privilege;
 use App\Models\Profil;
 use App\Models\Service;
 use App\Models\User;
 use App\Notifications\CourrierEnRetardNotification;
+use App\Services\WorkflowService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Livewire\Livewire;
 use Tests\TestCase;
@@ -70,19 +73,120 @@ class DashboardTest extends TestCase
         $this->assertSame(1, $component->get('courrierEntrantAujourdhui')['total']);
     }
 
-    // Module 10 (2026-10-09) — Courrier::scopeNonTransfere() : seul le
-    // statut initial 'enregistre' compte, pas un courrier déjà affecté.
-    public function test_la_carte_non_transferes_compte_seulement_les_courriers_au_statut_enregistre(): void
+    // Module 10 — Courrier::scopeAAffecter() : « enregistre » = accepté par
+    // le service, pas encore affecté (« Non transférés » jusqu'au 2026-11-10,
+    // qui comptait ces courriers comme jamais transférés). Un courrier encore
+    // chez la réceptionniste n'en fait pas partie.
+    public function test_la_carte_a_affecter_compte_les_courriers_acceptes_pas_encore_affectes(): void
     {
         $service = Service::factory()->create();
         $this->courrier(['statut' => 'enregistre', 'service_id' => $service->id]);
         $this->courrier(['statut' => 'affecte', 'service_id' => $service->id]);
+        $this->courrier(['statut' => 'en_attente_de_transfert']);
 
         $this->actingAs($this->utilisateurAvecProfil('Administrateur'));
 
         $component = Livewire::test(Dashboard::class);
 
-        $this->assertSame(1, $component->get('courriersNonTransferes'));
+        $this->assertSame(1, $component->get('courriersAAffecter'));
+    }
+
+    // 2026-11-10 (« it should match her mes courrier ») — les trois cartes
+    // de la réceptionniste comptent exactement ce que montrent les onglets
+    // de « Mes courriers », circuit réel compris (transfert, acceptation,
+    // remise de l'original).
+    public function test_les_cartes_de_lagent_comptent_comme_les_onglets_de_mes_courriers(): void
+    {
+        $agent = $this->utilisateurAvecProfil('Agent');
+        $service = Service::factory()->create(['code' => 'DST', 'responsable_id' => $this->utilisateurAvecProfil('Responsable de service')->id]);
+        $workflow = app(WorkflowService::class);
+
+        $enregistrerPar = function (User $auteur, array $attributs = []): Courrier {
+            $courrier = $this->courrier(array_merge(['statut' => 'en_attente_de_transfert'], $attributs));
+            CourrierHistorique::create(['courrier_id' => $courrier->id, 'auteur_id' => $auteur->id, 'action' => 'creation']);
+
+            return $courrier;
+        };
+
+        $enregistrerPar($agent);
+        $workflow->transfererAuService($enregistrerPar($agent), $service, $agent);
+        foreach ([$remis = $enregistrerPar($agent), $enregistrerPar($agent)] as $courrier) {
+            $workflow->transfererAuService($courrier, $service, $agent);
+            $workflow->accepterTransfert($courrier->fresh(), $service->responsable);
+        }
+        $workflow->marquerOriginalRemis($remis->fresh(), $agent);
+
+        // Ni le courrier d'une autre réceptionniste, ni un sortant.
+        $enregistrerPar($this->utilisateurAvecProfil('Agent'));
+        $enregistrerPar($agent, ['sens' => 'sortant']);
+
+        $this->actingAs($agent);
+
+        $tableau = Livewire::test(Dashboard::class);
+        $this->assertSame(1, $tableau->get('mesCourriersATransferer'));
+        $this->assertSame(1, $tableau->get('mesCourriersEnAttenteAcceptation'));
+        $this->assertSame(['total' => 2, 'a_remettre' => 1], $tableau->get('mesCourriersAcceptes'));
+
+        foreach (['en_attente_de_transfert' => 1, 'en_cours_de_transfert' => 1, 'acceptes' => 2] as $onglet => $attendu) {
+            $page = Livewire::test(MesCourriers::class)->call('changerOnglet', $onglet);
+            $this->assertSame($attendu, $page->get('courriers')->total(), "onglet {$onglet}");
+        }
+    }
+
+    // 2026-11-10 (« show them this », capture de l'onglet « Acceptés ») — sans
+    // « Tous les courriers » au menu, la liste est celle de « Mes courriers » :
+    // ses courriers entrants seulement, avec décharge et original.
+    public function test_sans_tous_les_courriers_la_liste_est_celle_de_mes_courriers(): void
+    {
+        Privilege::where('cle', 'courriers.menu_tous_les_courriers')->firstOrFail()->profils()->detach(Profil::where('nom', 'Agent')->value('id'));
+        $agent = $this->utilisateurAvecProfil('Agent');
+        $service = Service::factory()->create(['code' => 'DST', 'responsable_id' => $this->utilisateurAvecProfil('Responsable de service')->id]);
+        $workflow = app(WorkflowService::class);
+
+        $enregistrerPar = function (User $auteur, array $attributs = []): Courrier {
+            $courrier = $this->courrier(array_merge(['statut' => 'en_attente_de_transfert'], $attributs));
+            CourrierHistorique::create(['courrier_id' => $courrier->id, 'auteur_id' => $auteur->id, 'action' => 'creation']);
+
+            return $courrier;
+        };
+
+        $accepte = $enregistrerPar($agent);
+        $workflow->transfererAuService($accepte, $service, $agent);
+        $transfert = $workflow->accepterTransfert($accepte->fresh(), $service->responsable);
+        $sortant = $enregistrerPar($agent, ['sens' => 'sortant']);
+        $dUneAutre = $enregistrerPar($this->utilisateurAvecProfil('Agent'));
+
+        $this->actingAs($agent);
+
+        $tableau = Livewire::test(Dashboard::class);
+        $this->assertTrue($tableau->get('listeMesCourriers'));
+        $this->assertSame([$accepte->id], $tableau->get('derniersCourriers')->pluck('id')->all());
+        $tableau->assertSee($transfert->numero_decharge)
+            ->assertSee(__('À remettre'))
+            ->assertDontSee($sortant->numero_reference)
+            ->assertDontSee($dUneAutre->numero_reference);
+
+        $this->actingAs($this->utilisateurAvecProfil('Administrateur'));
+        $this->assertFalse(Livewire::test(Dashboard::class)->get('listeMesCourriers'));
+    }
+
+    // Sans l'entrée « Tous les courriers » au menu (cas de la réceptionniste
+    // sur la vraie base : elle garde la recherche de l'en-tête), « Voir
+    // tous » l'y emmenait quand même : le lien mène à « Mes courriers ».
+    public function test_sans_tous_les_courriers_le_lien_mene_a_mes_courriers(): void
+    {
+        Privilege::where('cle', 'courriers.menu_tous_les_courriers')->firstOrFail()->profils()->detach(Profil::where('nom', 'Agent')->value('id'));
+        $this->actingAs($this->utilisateurAvecProfil('Agent'));
+
+        Livewire::test(Dashboard::class)
+            ->assertSee(__('Voir mes courriers'))
+            ->assertDontSee(route('courriers.rechercher'), false);
+
+        $this->actingAs($this->utilisateurAvecProfil('Administrateur'));
+
+        Livewire::test(Dashboard::class)
+            ->assertSee(route('courriers.rechercher'), false)
+            ->assertDontSee(__('Voir mes courriers'));
     }
 
     public function test_un_administrateur_voit_toutes_les_statistiques(): void

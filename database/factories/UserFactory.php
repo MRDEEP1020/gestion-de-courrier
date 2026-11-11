@@ -29,6 +29,10 @@ class UserFactory extends Factory
             'email' => fake()->unique()->safeEmail(),
             'email_verified_at' => now(),
             'password' => static::$password ??= Hash::make('password'),
+            // 2026-11-11 — mot de passe déjà choisi par la personne : pas de
+            // renouvellement imposé (ExigerMotDePasseAJour) dans les tests
+            // qui n'en parlent pas.
+            'mot_de_passe_change_le' => now(),
             'remember_token' => Str::random(10),
             'two_factor_secret' => null,
             'two_factor_recovery_codes' => null,

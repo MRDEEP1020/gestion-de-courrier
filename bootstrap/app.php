@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\ExigerMotDePasseAJour;
 use App\Http\Middleware\SetLocale;
 use App\Jobs\ArchiverCourriersTraitesJob;
 use App\Jobs\CalculerOccupationStockageJob;
@@ -9,6 +10,7 @@ use App\Jobs\PreparerApercusManquantsJob;
 use App\Jobs\RecalculerConservationJob;
 use App\Jobs\RefreshDashboardStatsJob;
 use App\Jobs\RefreshStatistiquesJob;
+use App\Jobs\SauvegarderDocumentsLocalementJob;
 use App\Jobs\SendMailAlertJob;
 use App\Jobs\VerifierIntegriteFichiersJob;
 use App\Services\EtatSysteme;
@@ -30,7 +32,9 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         // Bascule FR/EN demandée par l'utilisateur (2026-09-07) — voir
         // App\Http\Middleware\SetLocale et DECISIONS.md.
-        $middleware->web(append: [SetLocale::class]);
+        // 2026-11-11 — ExigerMotDePasseAJour : mot de passe expiré ou jamais
+        // choisi, renouvellement obligatoire avant toute page.
+        $middleware->web(append: [SetLocale::class, ExigerMotDePasseAJour::class]);
     })
     ->withSchedule(function (Schedule $schedule): void {
         // Module 9 — PREMIÈRE tâche planifiée de tout ce projet (voir
@@ -123,6 +127,14 @@ return Application::configure(basePath: dirname(__DIR__))
             ->hourlyAt(15)
             ->when(fn () => (bool) config('services.archivage.apercu_auto'))
             ->name('apercus-securises')
+            ->withoutOverlapping();
+
+        // 2026-11-11 — copie de secours sur le PC, rangée par dossier de
+        // classement (ZIP chiffrés, voir App\Services\SauvegardeLocale) :
+        // incrémentale, chaque heure ; rien tant qu'elle n'est pas configurée.
+        $schedule->job(new SauvegarderDocumentsLocalementJob)
+            ->hourlyAt(50)
+            ->name('sauvegarde-locale')
             ->withoutOverlapping();
 
         // Battement du planificateur (2026-10-30) : s'il cesse (aucun

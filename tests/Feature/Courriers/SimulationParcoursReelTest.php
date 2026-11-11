@@ -76,6 +76,9 @@ class SimulationParcoursReelTest extends TestCase
         Queue::fake();
 
         $this->seed();
+        // Comptes pilotes : mot de passe jamais choisi → renouvellement imposé
+        // (ExigerMotDePasseAJour, 2026-11-11), sans rapport avec ce parcours.
+        User::query()->update(['mot_de_passe_change_le' => now()]);
 
         foreach ([
             'admin' => 'admin@test.local',

@@ -40,6 +40,13 @@
         <env name="ARCHIVAGE_SCELLEMENT_AUTO" value="false"/>
         <env name="ARCHIVAGE_PDFA_AUTO" value="false"/>
         <env name="ARCHIVAGE_APERCU_AUTO" value="false"/>
+        <!-- Copie de secours sur le PC (2026-11-11) : TOUJOURS désactivée en
+             test, quel que soit le .env — sinon un test écrirait dans le vrai
+             dossier de sauvegarde et sa synchronisation (base de test presque
+             vide) y supprimerait les copies réelles. SauvegardeLocaleTest
+             l'active explicitement dans un dossier temporaire. -->
+        <env name="GEC_SAUVEGARDE_DOSSIER" value=""/>
+        <env name="GEC_SAUVEGARDE_MOT_DE_PASSE" value=""/>
         <!-- Chiffrement des fichiers (2026-11-09) : clé FIXE réservée aux tests
              (« gec-cle-de-test-uniquement-32oct »), jamais celle du .env. -->
         <env name="GEC_FICHIERS_CLE" value="base64:Z2VjLWNsZS1kZS10ZXN0LXVuaXF1ZW1lbnQtMzJvY3Q="/>

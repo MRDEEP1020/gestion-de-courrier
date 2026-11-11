@@ -160,22 +160,47 @@ class SendMailAlertJobTest extends TestCase
         Notification::assertSentToTimes($this->responsable, CourrierEnRetardNotification::class, 1);
     }
 
+    // 2026-11-11 (« like in the clock phone ») — intervalle en heures, compté
+    // depuis le début de l'heure du dernier envoi : le job passe chaque
+    // heure à quelques secondes près, la relance ne glisse pas d'une heure.
+    public function test_une_relance_en_heures_tombe_a_lheure_pile_sans_glisser(): void
+    {
+        Notification::fake();
+        $this->collaborateur->forceFill(['preferences_notifications' => ['sla_relance_heures' => 6]])->save();
+        $jour = today();
+        $this->travelTo($jour->setTime(10, 0, 40));
+        $this->courrierAffecte(-1);
+
+        $this->executer();
+        $this->travelTo($jour->setTime(16, 0, 5));
+        $this->executer();
+        Notification::assertSentToTimes($this->collaborateur, CourrierEnRetardNotification::class, 2);
+
+        $this->travelTo($jour->setTime(21, 0, 5));
+        $this->executer();
+        Notification::assertSentToTimes($this->collaborateur, CourrierEnRetardNotification::class, 2);
+
+        $this->travelTo($jour->setTime(22, 0, 2));
+        $this->executer();
+        Notification::assertSentToTimes($this->collaborateur, CourrierEnRetardNotification::class, 3);
+    }
+
+    // 2026-11-10 — les canaux ne se coupent plus que par l'administrateur
+    // (privilège general.choisir_canaux_notification) : coupés puis remis
+    // dans Paramètres système ; le rythme personnel reste celui du collaborateur.
     public function test_une_relance_desactivee_peut_reprendre_sans_attendre_le_delai_global(): void
     {
         Notification::fake();
-        $this->collaborateur->forceFill(['preferences_notifications' => [
-            'alertes_sla' => ['email' => false, 'application' => false],
-            'sla_relance_jours' => 1,
-        ]])->save();
+        $this->collaborateur->forceFill(['preferences_notifications' => ['sla_relance_jours' => 1]])->save();
+        Parametre::actuel()->update(['notifications_defaut' => ['alertes_sla' => ['email' => false, 'application' => false]]]);
+        Parametre::invaliderCache();
         $courrier = $this->courrierAffecte(-1);
 
         $this->executer();
         Notification::assertNotSentTo($this->collaborateur, CourrierEnRetardNotification::class);
 
-        $this->collaborateur->forceFill(['preferences_notifications' => [
-            'alertes_sla' => ['email' => true, 'application' => true],
-            'sla_relance_jours' => 1,
-        ]])->save();
+        Parametre::actuel()->update(['notifications_defaut' => ['alertes_sla' => ['email' => true, 'application' => true]]]);
+        Parametre::invaliderCache();
         $this->executer();
 
         Notification::assertSentTo($this->collaborateur, CourrierEnRetardNotification::class, fn ($n) => $n->courrier->is($courrier));
@@ -315,5 +340,58 @@ class SendMailAlertJobTest extends TestCase
 
         Notification::assertSentTo([$this->collaborateur, $this->responsable], CourrierEnRetardNotification::class, fn ($n) => $n->escalade && $n->courrier->is($courrier));
         $this->assertNotNull($courrier->fresh()->alerte_escalade_le);
+    }
+
+    // 2026-11-10 — le responsable qui traite lui-même reçoit ses relances
+    // « en retard », mais l'escalade ne va qu'au niveau supérieur.
+    public function test_escalade_nest_pas_adressee_au_responsable_qui_traite_lui_meme(): void
+    {
+        Notification::fake();
+        Parametre::actuel()->update(['sla_escalade_jours' => 3]);
+        Parametre::invaliderCache();
+
+        $directeur = User::factory()->create(['profil_id' => Profil::where('nom', 'Responsable de service')->value('id')]);
+        Privilege::where('cle', 'courriers.voir_tout')->firstOrFail()->users()->attach($directeur->id);
+        $departement = OrganizationUnit::factory()->create(['type' => OrganizationUnit::TYPE_DEPARTMENT, 'responsible_user_id' => $directeur->id]);
+        OrganizationUnit::factory()->create([
+            'type' => OrganizationUnit::TYPE_SERVICE,
+            'parent_id' => $departement->id,
+            'service_id' => $this->service->id,
+            'responsible_user_id' => $this->responsable->id,
+        ]);
+
+        $courrier = $this->courrierAffecte(-5);
+        Affectation::create(['courrier_id' => $courrier->id, 'user_id' => $this->responsable->id, 'affecte_par_id' => $this->responsable->id]);
+
+        $this->executer();
+
+        Notification::assertSentTo($directeur, CourrierEnRetardNotification::class, fn ($n) => $n->escalade && $n->courrier->is($courrier));
+        Notification::assertNotSentTo($this->responsable, CourrierEnRetardNotification::class, fn ($n) => $n->escalade);
+        Notification::assertSentTo($this->responsable, CourrierEnRetardNotification::class, fn ($n) => ! $n->escalade && $n->enRetard);
+        $this->assertDatabaseHas('courrier_historiques', [
+            'courrier_id' => $courrier->id,
+            'action' => 'alerte_escalade',
+            'commentaire' => "Alerte SLA (escalade) envoyée à {$directeur->name}",
+        ]);
+    }
+
+    public function test_sans_niveau_superieur_le_responsable_qui_traite_lui_meme_ne_recoit_pas_descalade(): void
+    {
+        Notification::fake();
+        Parametre::actuel()->update(['sla_escalade_jours' => 3]);
+        Parametre::invaliderCache();
+        $courrier = $this->courrierAffecte(-5);
+        Affectation::create(['courrier_id' => $courrier->id, 'user_id' => $this->responsable->id, 'affecte_par_id' => $this->responsable->id]);
+
+        $this->executer();
+
+        Notification::assertNotSentTo($this->responsable, CourrierEnRetardNotification::class, fn ($n) => $n->escalade);
+        Notification::assertSentTo($this->responsable, CourrierEnRetardNotification::class, fn ($n) => ! $n->escalade && $n->enRetard);
+        $this->assertNotNull($courrier->fresh()->alerte_escalade_le);
+        $this->assertDatabaseHas('courrier_historiques', [
+            'courrier_id' => $courrier->id,
+            'action' => 'alerte_escalade',
+            'commentaire' => 'Alerte SLA (escalade) : le responsable traite lui-même ce courrier et aucun niveau supérieur n\'est relié dans l\'Organisation.',
+        ]);
     }
 }

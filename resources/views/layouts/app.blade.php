@@ -24,6 +24,21 @@
                 </flux:callout.text>
             </flux:callout>
         @endif
+        {{-- 2026-11-11 — préavis d'expiration du mot de passe
+             (User::MOT_DE_PASSE_PREAVIS_JOURS), puis confirmation du renouvellement. --}}
+        @if (($joursMotDePasse = auth()->user()?->joursAvantExpirationMotDePasse()) !== null)
+            <flux:callout variant="warning" icon="key" class="mb-6">
+                <flux:callout.text>
+                    {{ trans_choice('Votre mot de passe expire dans :n jour.|Votre mot de passe expire dans :n jours.', $joursMotDePasse, ['n' => $joursMotDePasse]) }}
+                    <flux:link :href="route('mot-de-passe.renouveler')">{{ __('Le renouveler maintenant') }}</flux:link>
+                </flux:callout.text>
+            </flux:callout>
+        @endif
+        @if (session('mot-de-passe-renouvele'))
+            <flux:callout variant="success" icon="check-circle" class="mb-6">
+                <flux:callout.text>{{ __('Mot de passe renouvelé.') }}</flux:callout.text>
+            </flux:callout>
+        @endif
         {{ $slot }}
     </flux:main>
 </x-layouts::app.sidebar>

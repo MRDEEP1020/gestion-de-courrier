@@ -5,6 +5,7 @@ namespace App\Livewire\Backend;
 use App\Jobs\CalculerOccupationStockageJob;
 use App\Jobs\ChiffrerFichiersExistantsJob;
 use App\Jobs\RecalculerConservationJob;
+use App\Jobs\SauvegarderDocumentsLocalementJob;
 use App\Jobs\VerifierIntegriteFichiersJob;
 use App\Livewire\Backend\Forms\CourrierForm;
 use App\Models\Courrier;
@@ -18,6 +19,7 @@ use App\Models\PieceJointe;
 use App\Services\ChiffrementFichiers;
 use App\Services\ConservationService;
 use App\Services\EtatSysteme;
+use App\Services\SauvegardeLocale;
 use Flux\Flux;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -125,6 +127,35 @@ class SecuriteAudit extends Component
         CalculerOccupationStockageJob::dispatch();
 
         Flux::toast(variant: 'success', text: __('Calcul lancé en tâche de fond : rouvrez cet onglet dans un instant pour le résultat.'));
+    }
+
+    // 2026-11-11 — copie de secours sur le PC, rangée par dossier (ZIP
+    // chiffrés, voir App\Services\SauvegardeLocale).
+    #[Computed]
+    public function sauvegardeLocale(): array
+    {
+        $sauvegarde = app(SauvegardeLocale::class);
+        $etat = Cache::get(SauvegardeLocale::CLE_ETAT);
+
+        return [
+            'active' => $sauvegarde->active(),
+            'dossier' => $sauvegarde->racine(),
+            'etat' => $etat,
+            'le' => isset($etat['le']) ? Carbon::parse($etat['le']) : null,
+        ];
+    }
+
+    public function lancerSauvegardeLocale(): void
+    {
+        $this->authorize('voirSecuriteAudit', Courrier::class);
+
+        if (! app(SauvegardeLocale::class)->active()) {
+            return;
+        }
+
+        SauvegarderDocumentsLocalementJob::dispatch();
+
+        Flux::toast(variant: 'success', text: __('Mise à jour lancée en tâche de fond : rouvrez cet onglet dans un instant pour le résultat.'));
     }
 
     public function updated(string $nom): void

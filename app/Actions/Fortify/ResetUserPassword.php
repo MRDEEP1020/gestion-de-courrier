@@ -22,8 +22,11 @@ class ResetUserPassword implements ResetsUserPasswords
             'password' => $this->passwordRules(),
         ])->validate();
 
+        // 2026-11-11 — choisi par la personne : le délai d'expiration repart
+        // d'ici (voir App\Http\Middleware\ExigerMotDePasseAJour).
         $user->forceFill([
             'password' => $input['password'],
+            'mot_de_passe_change_le' => now(),
         ])->save();
     }
 }

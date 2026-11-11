@@ -82,6 +82,10 @@ class ParametreSysteme extends Component
 
     public string $dashboardDelaiMoyenPeriodeJours = '90';
 
+    // 2026-11-11 — validité d'un mot de passe en jours, 0 = jamais
+    // (User::doitRenouvelerMotDePasse()). Chaîne pour la même raison que ci-dessus.
+    public string $motDePasseExpirationJours = '90';
+
     // ===== Modèle de décharge (2026-10-28) — [champ => texte], voir
     // Parametre::modeleDechargeParDefaut() ; enregistré avec le reste. =====
     public array $modeleDecharge = [];
@@ -122,6 +126,7 @@ class ParametreSysteme extends Component
         $this->ocrConfianceMinimale = (string) $parametres->ocr_confiance_minimale;
         $this->ocrLongueurMinimaleTexte = (string) $parametres->ocr_longueur_minimale_texte;
         $this->dashboardDelaiMoyenPeriodeJours = (string) $parametres->dashboard_delai_moyen_periode_jours;
+        $this->motDePasseExpirationJours = (string) ($parametres->mot_de_passe_expiration_jours ?? 90);
         $this->modeleDecharge = $parametres->modeleDecharge();
         $this->dechargeNumeroPrefixe = $parametres->decharge_numero_prefixe ?? 'ACC';
         $this->dechargeNumeroChiffres = (string) ($parametres->decharge_numero_chiffres ?? 6);
@@ -224,7 +229,9 @@ class ParametreSysteme extends Component
             'ocrConfianceMinimale' => ['required', 'integer', 'min:0', 'max:100'],
             'ocrLongueurMinimaleTexte' => ['required', 'integer', 'min:0', 'max:1000'],
             'dashboardDelaiMoyenPeriodeJours' => ['required', 'integer', 'min:1', 'max:730'],
+            'motDePasseExpirationJours' => ['required', 'integer', 'min:0', 'max:3650'],
         ], [], [
+            'motDePasseExpirationJours' => __('validité du mot de passe'),
             'numeroReferencePrefixe' => __('préfixe'),
             'numeroReferenceChiffresSequence' => __('nombre de chiffres'),
             'slaJoursDefaut' => __('délai par défaut'),
@@ -266,6 +273,7 @@ class ParametreSysteme extends Component
             'ocr_confiance_minimale' => (int) $data['ocrConfianceMinimale'],
             'ocr_longueur_minimale_texte' => (int) $data['ocrLongueurMinimaleTexte'],
             'dashboard_delai_moyen_periode_jours' => (int) $data['dashboardDelaiMoyenPeriodeJours'],
+            'mot_de_passe_expiration_jours' => (int) $data['motDePasseExpirationJours'],
             'decharge_numero_prefixe' => strtoupper($data['dechargeNumeroPrefixe']),
             'decharge_numero_chiffres' => (int) $data['dechargeNumeroChiffres'],
             'notifications_defaut' => array_map(
